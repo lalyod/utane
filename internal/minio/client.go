@@ -13,9 +13,9 @@ type Client struct {
 	Bucket string
 }
 
-func New(endpoint, accessKey,secretKey, bucket string, useSSL bool) *Client {
+func New(endpoint, accessKey, secretKey, bucket string, useSSL bool) *Client {
 	client, err := minio.New(endpoint, &minio.Options{
-		Creds: credentials.NewStaticV4(accessKey, secretKey, ""),
+		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
 	})
 	if err != nil {
@@ -24,11 +24,11 @@ func New(endpoint, accessKey,secretKey, bucket string, useSSL bool) *Client {
 
 	return &Client{
 		Client: client,
-		Bucket:  bucket,
+		Bucket: bucket,
 	}
 }
 
-func (c *Client) EnsureBucket(ctx context.Context){
+func (c *Client) EnsureBucket(ctx context.Context) {
 	exists, err := c.BucketExists(ctx, c.Bucket)
 	if err != nil {
 		log.Fatal(err)
