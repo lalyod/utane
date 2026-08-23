@@ -379,7 +379,7 @@ const playTrack = (id) => {
   pendingResumeTime = null;
   lastSavedSecond = -1;
   persistPlayback(true);
-  audio.play().catch(() => showMessage("Playback could not start."));
+  audio.play().catch((error) => showMessage(error.message || error.name || "Playback could not start."));
   renderTracks();
   if (state.lyricsPanelOpen) loadPanelLyrics(track);
 };
@@ -1191,6 +1191,7 @@ seek.addEventListener("blur", () => { state.seeking = false; });
 audio.addEventListener("play", () => setPlaybackIcon(true));
 audio.addEventListener("pause", () => { setPlaybackIcon(false); persistPlayback(true); });
 audio.addEventListener("ended", () => { const id = adjacentTrackID(state.tracks, state.currentID, 1); if (id) playTrack(id); else setPlaybackIcon(false); });
+audio.addEventListener("error", () => showMessage(`Playback error ${audio.error?.code || "unknown"}.`));
 audio.addEventListener("loadedmetadata", () => {
   $("#seek").max = audio.duration || 0;
   $("#total-time").textContent = formatTime(audio.duration);
