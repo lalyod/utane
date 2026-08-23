@@ -40,7 +40,7 @@ func Serve() error {
 	service := &music.Service{
 		Minio:               minio,
 		DB:                  dbPoll,
-		HTTPClient:          &http.Client{Timeout: 10 * time.Second},
+		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
 		LyricsEndpoint:      "https://lrclib.net/api/get",
 		MusicBrainzEndpoint: "https://musicbrainz.org/ws/2/release/",
 		CoverArtEndpoint:    "https://coverartarchive.org",
@@ -71,6 +71,9 @@ func Serve() error {
 		http.ServeFile(w, r, filepath.Join("web", "index.html"))
 	})
 	r.Get("/manage", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join("web", "index.html"))
+	})
+	r.Get("/playlists", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, filepath.Join("web", "index.html"))
 	})
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))

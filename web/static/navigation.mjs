@@ -1,4 +1,4 @@
-export const viewForPath = (path) => path === "/manage" ? "manage" : "player";
+export const viewForPath = (path) => path === "/manage" ? "manage" : path === "/playlists" ? "playlists" : "player";
 
 export const lyricsLayout = (view, open, mobile) => ({
   library: view === "player" && !open,

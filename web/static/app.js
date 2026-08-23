@@ -1,31 +1,17 @@
-import {
-    activeAt,
-    centeredScrollTop,
-    parseEnhancedLRC,
-    scriptLang,
-} from './lyrics.mjs'
-import { adjacentTrackID, lyricsLayout, viewForPath } from './navigation.mjs'
-import { clampTime, parsePlaybackState, resumeTime } from './playback.mjs'
-import { trackArtworkURL } from './artwork.mjs'
+import { activeAt, centeredScrollTop, parseEnhancedLRC, scriptLang } from "./lyrics.mjs?v=4";
+import { adjacentTrackID, lyricsLayout, viewForPath } from "./navigation.mjs?v=4";
+import { clampTime, parsePlaybackState, resumeTime } from "./playback.mjs?v=4";
+import { trackArtworkURL } from "./artwork.mjs?v=4";
 
 const state = {
-    artists: [],
-    albums: [],
-    tracks: [],
-    currentID: '',
-    duration: 0,
-    selectedAlbum: '',
-    query: '',
-    view: viewForPath(location.pathname),
-    manageTab: 'artists',
-    manageQuery: '',
-    lyricsPanelOpen: false,
-    panelLyrics: { trackID: '', lines: [], activeLyric: -1, activeWord: -1 },
-    editorLyrics: { trackID: '', lines: [], activeLyric: -1, activeWord: -1 },
-    pendingDelete: null,
-    seeking: false,
-    playbackRestored: false,
-}
+  artists: [], albums: [], tracks: [], playlists: [], currentID: "", duration: 0,
+  selectedAlbum: "", selectedPlaylist: "", playbackPlaylist: "", query: "", view: viewForPath(location.pathname),
+  manageTab: "artists", manageQuery: "", lyricsPanelOpen: false, shuffle: false, loop: false,
+  playlistPickerTrack: "", playlistPickerQuery: "",
+  panelLyrics: { trackID: "", lines: [], activeLyric: -1, activeWord: -1 },
+  editorLyrics: { trackID: "", lines: [], activeLyric: -1, activeWord: -1 },
+  pendingDelete: null, seeking: false, playbackRestored: false,
+};
 
 const $ = (selector) => document.querySelector(selector)
 const audio = $('#audio')
@@ -90,6 +76,15 @@ const showMessage = (text) => {
     messageTimer = setTimeout(() => message.classList.add('hidden'), 4000)
 }
 
+const withButtonLoading = async (button, text, action) => {
+  if (button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = text;
+  try { return await action(); }
+  finally { button.disabled = false; button.textContent = label; }
+};
+
 const persistPlayback = (force = false) => {
     if (!state.currentID || pendingResumeTime !== null) return
     const second = Math.max(0, Math.floor(audio.currentTime || 0))
@@ -138,19 +133,15 @@ const recordIcon = `
     <svg aria-hidden="true" class="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M12 4a8 8 0 0 1 8 8"/></svg>
   </div>`
 
-const albumFor = (id) => state.albums.find((album) => album.id === id)
-const artistFor = (id) => state.artists.find((artist) => artist.id === id)
-const trackFor = (id) => state.tracks.find((track) => track.id === id)
-const currentTrack = () => trackFor(state.currentID)
-const coverURL = (albumID) =>
-    albumFor(albumID)?.has_cover ? `/music/albums/${albumID}/cover` : ''
-const artworkURL = (track) => trackArtworkURL(track, albumFor(track?.album_id))
-const artistInitial = (name) =>
-    Array.from(String(name || '').trim())[0]?.toLocaleUpperCase() || '?'
-const avatarURL = (artist) =>
-    artist?.has_avatar
-        ? `/music/artists/${encodeURIComponent(artist.id)}/avatar?v=${avatarRevision}`
-        : ''
+const albumFor = (id) => state.albums.find((album) => album.id === id);
+const artistFor = (id) => state.artists.find((artist) => artist.id === id);
+const trackFor = (id) => state.tracks.find((track) => track.id === id);
+const playlistFor = (id) => state.playlists.find((playlist) => playlist.id === id);
+const currentTrack = () => trackFor(state.currentID);
+const coverURL = (albumID) => albumFor(albumID)?.has_cover ? `/music/albums/${albumID}/cover` : "";
+const artworkURL = (track) => trackArtworkURL(track, albumFor(track?.album_id));
+const artistInitial = (name) => Array.from(String(name || "").trim())[0]?.toLocaleUpperCase() || "?";
+const avatarURL = (artist) => artist?.has_avatar ? `/music/artists/${encodeURIComponent(artist.id)}/avatar?v=${avatarRevision}` : "";
 
 const artistAvatarHTML = (artist, size) =>
     `<span class="relative grid ${size} shrink-0 place-items-center overflow-hidden rounded-full bg-amber-300/10 font-semibold text-amber-200 ring-1 ring-white/10"><span aria-hidden="true">${escapeHTML(artistInitial(artist.name))}</span>${artist.has_avatar ? `<img data-artist-avatar src="${avatarURL(artist)}" alt="" class="absolute inset-0 h-full w-full object-cover">` : ''}</span>`
@@ -189,6 +180,12 @@ const filteredTracks = () =>
                 .includes(state.query)
         )
     })
+
+const activeTracks = () => {
+  const playlist = playlistFor(state.playbackPlaylist);
+  if (!playlist) return filteredTracks();
+  return playlist.track_ids.map(trackFor).filter(Boolean);
+};
 
 const fillArtistSelects = () => {
     document.querySelectorAll('select[name="artist_id"]').forEach((select) => {
@@ -520,11 +517,43 @@ const playTrack = (id) => {
     if (state.lyricsPanelOpen) loadPanelLyrics(track)
 }
 
+const randomTrackID = (tracks) => {
+  const choices = tracks.filter((track) => track.id !== state.currentID);
+  return (choices[Math.floor(Math.random() * choices.length)] || tracks[0])?.id || "";
+};
+
+const nextTrackID = (offset, ended = false) => {
+  if (ended && state.loop) return state.currentID;
+  const tracks = activeTracks();
+  if (!tracks.length) return "";
+  if (state.shuffle && offset > 0) return randomTrackID(tracks);
+  return adjacentTrackID(tracks, state.currentID, offset);
+};
+
 const playFirstVisible = () => {
     const track = filteredTracks()[0] || state.tracks[0]
     if (track) playTrack(track.id)
     else showMessage('There are no tracks to play.')
 }
+
+const playPlaylist = (id) => {
+  state.selectedPlaylist = id;
+  state.playbackPlaylist = id;
+  state.selectedAlbum = "";
+  if (state.view === "player") renderLibrary(); else renderPlaylistsPage();
+  const track = activeTracks()[0];
+  if (track) playTrack(track.id); else showMessage("This playlist has no playable tracks.");
+};
+
+const updatePlaybackModeUI = () => {
+  [["#shuffle-toggle", state.shuffle, "Shuffle"], ["#loop-toggle", state.loop, "Loop"]].forEach(([selector, active, label]) => {
+    const button = $(selector);
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", `${label} ${active ? "on" : "off"}`);
+    button.classList.toggle("text-amber-300", active);
+    button.classList.toggle("text-stone-500", !active);
+  });
+};
 
 const setLyricsEditor = (editing) => {
     $('#lyrics-display').classList.toggle('hidden', editing)
@@ -1222,6 +1251,85 @@ const openTrackDialog = (track) => {
         : 'Duration will be read automatically.'
     $('#track-dialog').showModal()
 }
+
+const openPlaylistDialog = (playlist) => {
+  const form = $("#playlist-form"); resetDialogForm(form);
+  if (playlist) { form.dataset.id = playlist.id; form.elements.name.value = playlist.name; }
+  $("#playlist-dialog-title").textContent = playlist ? "Rename playlist" : "Create playlist";
+  $("#playlist-submit").textContent = playlist ? "Save playlist" : "Create playlist";
+  $("#playlist-dialog").showModal();
+};
+
+const matchingPlaylists = () => {
+  const query = state.playlistPickerQuery.toLowerCase();
+  return state.playlists.filter((playlist) => !query || playlist.name.toLowerCase().includes(query));
+};
+
+const renderPlaylistPicker = () => {
+  const track = trackFor(state.playlistPickerTrack);
+  $("#playlist-picker-track").textContent = track ? `${track.title} · ${track.artist_name}` : "";
+  const list = $("#playlist-picker-list");
+  const playlists = matchingPlaylists();
+  list.innerHTML = playlists.map((playlist) => `
+    <button type="button" data-picker-playlist="${playlist.id}" class="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left hover:border-amber-300/40 hover:bg-white/[0.04]">
+      <span class="min-w-0"><span class="block truncate text-sm font-semibold text-stone-100">${escapeHTML(playlist.name)}</span><span class="mt-0.5 block text-xs text-stone-500">${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? "" : "s"}</span></span>
+      <span class="text-xs font-semibold text-amber-300">Add</span>
+    </button>`).join("") || `<div class="rounded-xl border border-dashed border-white/10 p-5 text-center text-sm text-stone-500">No matching playlists.</div>`;
+  const query = state.playlistPickerQuery.trim();
+  const exists = state.playlists.some((playlist) => playlist.name.toLowerCase() === query.toLowerCase());
+  $("#playlist-picker-create").classList.toggle("hidden", !query || exists);
+  $("#playlist-picker-create").textContent = query ? `Create “${query}” and add` : "Create playlist and add";
+};
+
+const closePlaylistPicker = () => {
+  $("#playlist-picker").classList.add("hidden");
+};
+
+const positionPlaylistPicker = (anchor) => {
+  const picker = $("#playlist-picker");
+  picker.classList.remove("hidden");
+  const rect = anchor?.getBoundingClientRect();
+  const gap = 8;
+  const width = picker.offsetWidth;
+  const height = picker.offsetHeight;
+  const left = rect ? Math.min(Math.max(16, rect.right - width), innerWidth - width - 16) : Math.max(16, innerWidth - width - 16);
+  const below = rect ? rect.bottom + gap : 64;
+  const top = below + height <= innerHeight - 16 ? below : Math.max(16, (rect?.top || innerHeight) - height - gap);
+  picker.style.left = `${left}px`;
+  picker.style.top = `${top}px`;
+};
+
+const openPlaylistPicker = (trackID, anchor) => {
+  const track = trackFor(trackID);
+  if (!track) return;
+  state.playlistPickerTrack = trackID;
+  state.playlistPickerQuery = "";
+  $("#playlist-picker-search").value = "";
+  renderPlaylistPicker();
+  positionPlaylistPicker(anchor);
+  $("#playlist-picker-search").focus();
+};
+
+const addTrackToPlaylist = async (playlistID, trackID = state.playlistPickerTrack) => {
+  if (!playlistID) {
+    showMessage("Choose a playlist first.");
+    return;
+  }
+  const playlist = playlistFor(playlistID);
+  await api(`/music/playlists/${playlistID}/tracks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ track_id: trackID }) });
+  await load();
+  closePlaylistPicker();
+  showMessage(`Added to ${playlist?.name || "playlist"}.`);
+};
+
+const createPlaylistAndAddTrack = async () => {
+  const name = state.playlistPickerQuery.trim();
+  if (!name) return;
+  await api("/music/playlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  await load();
+  const playlist = state.playlists.find((item) => item.name.toLowerCase() === name.toLowerCase());
+  if (playlist) await addTrackToPlaylist(playlist.id);
+};
 
 const openDelete = (type, item) => {
     state.pendingDelete = { type, id: item.id }

@@ -36,3 +36,10 @@ type Track struct {
 	SyncedLyrics string    `json:"synced_lyrics,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
+
+type Playlist struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	TrackIDs  []string  `json:"track_ids"`
+	CreatedAt time.Time `json:"created_at"`
+}

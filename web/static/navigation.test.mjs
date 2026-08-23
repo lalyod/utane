@@ -6,6 +6,7 @@ import { adjacentTrackID, lyricsLayout, viewForPath } from "./navigation.mjs";
 test("maps only the manage path to the manage view", () => {
   assert.equal(viewForPath("/"), "player");
   assert.equal(viewForPath("/manage"), "manage");
+  assert.equal(viewForPath("/playlists"), "playlists");
   assert.equal(viewForPath("/anything-else"), "player");
 });
 
