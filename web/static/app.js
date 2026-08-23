@@ -1,12 +1,13 @@
-import { activeAt, centeredScrollTop, parseEnhancedLRC, scriptLang } from "./lyrics.mjs";
-import { adjacentTrackID, lyricsLayout, viewForPath } from "./navigation.mjs";
-import { clampTime, parsePlaybackState, resumeTime } from "./playback.mjs";
-import { trackArtworkURL } from "./artwork.mjs";
+import { activeAt, centeredScrollTop, parseEnhancedLRC, scriptLang } from "./lyrics.mjs?v=4";
+import { adjacentTrackID, lyricsLayout, viewForPath } from "./navigation.mjs?v=4";
+import { clampTime, parsePlaybackState, resumeTime } from "./playback.mjs?v=4";
+import { trackArtworkURL } from "./artwork.mjs?v=4";
 
 const state = {
-  artists: [], albums: [], tracks: [], currentID: "", duration: 0,
-  selectedAlbum: "", query: "", view: viewForPath(location.pathname),
-  manageTab: "artists", manageQuery: "", lyricsPanelOpen: false,
+  artists: [], albums: [], tracks: [], playlists: [], currentID: "", duration: 0,
+  selectedAlbum: "", selectedPlaylist: "", playbackPlaylist: "", query: "", view: viewForPath(location.pathname),
+  manageTab: "artists", manageQuery: "", lyricsPanelOpen: false, shuffle: false, loop: false,
+  playlistPickerTrack: "", playlistPickerQuery: "",
   panelLyrics: { trackID: "", lines: [], activeLyric: -1, activeWord: -1 },
   editorLyrics: { trackID: "", lines: [], activeLyric: -1, activeWord: -1 },
   pendingDelete: null, seeking: false, playbackRestored: false,
@@ -60,6 +61,15 @@ const showMessage = (text) => {
   messageTimer = setTimeout(() => message.classList.add("hidden"), 4000);
 };
 
+const withButtonLoading = async (button, text, action) => {
+  if (button.disabled) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = text;
+  try { return await action(); }
+  finally { button.disabled = false; button.textContent = label; }
+};
+
 const persistPlayback = (force = false) => {
   if (!state.currentID || pendingResumeTime !== null) return;
   const second = Math.max(0, Math.floor(audio.currentTime || 0));
@@ -106,6 +116,7 @@ const recordIcon = `
 const albumFor = (id) => state.albums.find((album) => album.id === id);
 const artistFor = (id) => state.artists.find((artist) => artist.id === id);
 const trackFor = (id) => state.tracks.find((track) => track.id === id);
+const playlistFor = (id) => state.playlists.find((playlist) => playlist.id === id);
 const currentTrack = () => trackFor(state.currentID);
 const coverURL = (albumID) => albumFor(albumID)?.has_cover ? `/music/albums/${albumID}/cover` : "";
 const artworkURL = (track) => trackArtworkURL(track, albumFor(track?.album_id));
@@ -139,6 +150,12 @@ const filteredTracks = () => state.tracks.filter((track) => {
   if (state.selectedAlbum && track.album_id !== state.selectedAlbum) return false;
   return !state.query || `${track.title} ${track.artist_name} ${track.album_title}`.toLowerCase().includes(state.query);
 });
+
+const activeTracks = () => {
+  const playlist = playlistFor(state.playbackPlaylist);
+  if (!playlist) return filteredTracks();
+  return playlist.track_ids.map(trackFor).filter(Boolean);
+};
 
 const fillArtistSelects = () => {
   document.querySelectorAll('select[name="artist_id"]').forEach((select) => {
@@ -193,6 +210,7 @@ const renderAlbums = () => {
       <span class="mt-1 block truncate text-xs text-stone-500">${escapeHTML(album.artist_name)}${album.year ? ` · ${album.year}` : ""}</span>`;
     item.addEventListener("click", () => {
       state.selectedAlbum = selected ? "" : album.id;
+      state.playbackPlaylist = "";
       renderLibrary();
       $("#tracks-heading").scrollIntoView({ behavior: reducedMotion.matches ? "auto" : "smooth", block: "start" });
     });
@@ -212,17 +230,69 @@ const renderTracks = () => {
   $("#track-list").innerHTML = "";
   tracks.forEach((track, visibleIndex) => {
     const active = track.id === state.currentID;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `group grid w-full grid-cols-[2.5rem_minmax(0,1fr)_3rem] items-center border-b border-white/[0.045] px-4 py-3 text-left transition last:border-0 hover:bg-white/[0.045] md:grid-cols-[3rem_minmax(0,1.4fr)_minmax(8rem,1fr)_5rem] md:px-5 ${active ? "bg-amber-300/[0.07]" : ""}`;
-    button.innerHTML = `
-      <span class="text-xs tabular-nums ${active ? "text-amber-300" : "text-stone-600 group-hover:text-stone-300"}">${active ? "●" : track.track_number || visibleIndex + 1}</span>
-      <span class="flex min-w-0 items-center gap-3"><span class="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-white/[0.05]">${artworkURL(track) ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">` : recordIcon}</span><span class="min-w-0"><span class="block truncate text-sm font-medium ${active ? "text-amber-300" : "text-stone-100"}">${escapeHTML(track.title)}</span><span class="mt-0.5 block truncate text-xs text-stone-500">${escapeHTML(track.artist_name)}</span></span></span>
-      <span class="hidden truncate pr-4 text-sm text-stone-500 md:block">${escapeHTML(track.album_title || "Single")}</span>
-      <span class="text-right text-xs tabular-nums text-stone-600">${formatTime(track.duration)}</span>`;
-    button.addEventListener("click", () => playTrack(track.id));
-    $("#track-list").append(button);
+    const row = document.createElement("div");
+    row.className = `group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center border-b border-white/[0.045] transition last:border-0 hover:bg-white/[0.045] ${active ? "bg-amber-300/[0.07]" : ""}`;
+    row.innerHTML = `
+      <button type="button" data-track-play="${track.id}" class="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)_3rem] items-center px-4 py-3 text-left md:grid-cols-[3rem_minmax(0,1.4fr)_minmax(8rem,1fr)_5rem] md:px-5">
+        <span class="text-xs tabular-nums ${active ? "text-amber-300" : "text-stone-600 group-hover:text-stone-300"}">${active ? "●" : track.track_number || visibleIndex + 1}</span>
+        <span class="flex min-w-0 items-center gap-3"><span class="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-white/[0.05]">${artworkURL(track) ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">` : recordIcon}</span><span class="min-w-0"><span class="block truncate text-sm font-medium ${active ? "text-amber-300" : "text-stone-100"}">${escapeHTML(track.title)}</span><span class="mt-0.5 block truncate text-xs text-stone-500">${escapeHTML(track.artist_name)}</span></span></span>
+        <span class="hidden truncate pr-4 text-sm text-stone-500 md:block">${escapeHTML(track.album_title || "Single")}</span>
+        <span class="text-right text-xs tabular-nums text-stone-600">${formatTime(track.duration)}</span>
+      </button>
+      <button type="button" data-track-add-playlist="${track.id}" aria-label="Add ${escapeHTML(track.title)} to playlist" class="mr-3 rounded-full px-3 py-2 text-xs font-semibold text-stone-500 hover:bg-white/[0.07] hover:text-amber-300">Add to playlist</button>`;
+    $("#track-list").append(row);
   });
+};
+
+const renderPlaylistsPage = () => {
+  const list = $("#playlist-list");
+  if (!state.playlists.length) {
+    list.innerHTML = `<div class="rounded-2xl border border-dashed border-white/10">${emptyState("No playlists yet", "Create a playlist, then add tracks from your library.", "py-8")}</div>`;
+    $("#playlist-detail-actions").classList.add("hidden");
+    $("#playlist-track-list").innerHTML = emptyState("No playlist selected", "Create a playlist to get started.");
+    return;
+  }
+  if (!playlistFor(state.selectedPlaylist)) state.selectedPlaylist = state.playlists[0].id;
+  list.innerHTML = "";
+  state.playlists.forEach((playlist) => {
+    const tracks = playlist.track_ids.map(trackFor).filter(Boolean);
+    const selected = playlist.id === state.selectedPlaylist;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.dataset.playlistSelect = playlist.id;
+    item.className = `block w-full rounded-2xl border ${selected ? "border-amber-300/50 bg-amber-300/[0.06]" : "border-white/[0.07] bg-white/[0.025]"} p-5 text-left hover:bg-white/[0.045]`;
+    item.innerHTML = `
+      <h3 class="truncate font-semibold ${selected ? "text-amber-300" : "text-stone-100"}">${escapeHTML(playlist.name)}</h3>
+      <p class="mt-1 text-sm text-stone-500">${tracks.length} track${tracks.length === 1 ? "" : "s"}</p>`;
+    list.append(item);
+  });
+  renderPlaylistDetail();
+};
+
+const renderPlaylistDetail = () => {
+  const playlist = playlistFor(state.selectedPlaylist);
+  const tracks = playlist?.track_ids.map(trackFor).filter(Boolean) || [];
+  $("#playlist-detail-title").textContent = playlist?.name || "Choose a playlist";
+  $("#playlist-detail-meta").textContent = playlist ? `${tracks.length} track${tracks.length === 1 ? "" : "s"}` : "Select one to see its tracks.";
+  $("#playlist-detail-actions").classList.toggle("hidden", !playlist);
+  $("#playlist-detail-actions").classList.toggle("flex", Boolean(playlist));
+  if (!playlist) {
+    $("#playlist-track-list").innerHTML = emptyState("No playlist selected", "Choose a playlist on the left.");
+    return;
+  }
+  if (!tracks.length) {
+    $("#playlist-track-list").innerHTML = emptyState("No tracks yet", "Use Add on any track to put it here.");
+    return;
+  }
+  $("#playlist-track-list").innerHTML = tracks.map((track, index) => `
+    <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center border-b border-white/[0.045] px-5 py-3 last:border-0">
+      <button type="button" data-track-play="${track.id}" class="flex min-w-0 items-center gap-3 text-left">
+        <span class="w-6 text-xs tabular-nums text-stone-600">${index + 1}</span>
+        <span class="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-white/[0.05]">${artworkURL(track) ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">` : recordIcon}</span>
+        <span class="min-w-0"><span class="block truncate text-sm font-medium text-stone-100">${escapeHTML(track.title)}</span><span class="mt-0.5 block truncate text-xs text-stone-500">${escapeHTML(track.artist_name)}</span></span>
+      </button>
+      <button type="button" data-playlist-remove-track="${track.id}" class="rounded-full px-3 py-2 text-xs font-semibold text-red-400 hover:bg-red-400/10">Remove</button>
+    </div>`).join("");
 };
 
 const renderLibrary = () => { renderHero(); renderAlbums(); renderTracks(); };
@@ -231,6 +301,7 @@ const actionButtons = (type, id, includeLyrics = false) => `
   ${type === "track" ? `<button data-action="play" data-type="${type}" data-id="${id}" class="text-amber-300 hover:text-amber-200">Play</button>` : ""}
   <button data-action="edit" data-type="${type}" data-id="${id}" class="text-stone-300 hover:text-white">Edit</button>
   ${includeLyrics ? `<button data-action="lyrics" data-type="${type}" data-id="${id}" class="text-stone-300 hover:text-white">Lyrics</button>` : ""}
+  ${type === "track" ? `<button data-action="add-playlist" data-type="${type}" data-id="${id}" class="text-stone-300 hover:text-white">Add to playlist</button>` : ""}
   <button data-action="delete" data-type="${type}" data-id="${id}" class="text-red-400 hover:text-red-300">Delete</button>`;
 
 const manageItems = () => {
@@ -287,6 +358,7 @@ const renderRoute = () => {
   $("#lyrics-panel").classList.toggle("hidden", !layout.panel);
   $("#lyrics-panel").classList.toggle("flex", layout.panel);
   $("#manage-view").classList.toggle("hidden", state.view !== "manage");
+  $("#playlists-view").classList.toggle("hidden", state.view !== "playlists");
   $("#player-search-wrap").classList.toggle("hidden", state.view !== "player" || layout.panel && mobileLayout.matches);
   $("#lyrics-toggle").setAttribute("aria-expanded", String(layout.panel));
   $("#lyrics-toggle").setAttribute("aria-label", layout.panel ? "Hide lyrics" : "Show lyrics");
@@ -300,23 +372,26 @@ const renderRoute = () => {
     }
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
-  if (state.view === "manage") renderManage(); else renderLibrary();
+  if (state.view === "manage") renderManage(); else if (state.view === "playlists") renderPlaylistsPage(); else renderLibrary();
 };
 
 const render = () => { fillArtistSelects(); fillAlbumSelect(); renderLibrary(); renderManage(); renderRoute(); };
 
 const load = async () => {
   const operation = ++loadOperation;
-  const [artists, albums, tracks] = await Promise.all([api("/music/artists"), api("/music/albums"), api("/music/tracks")]);
+  const [artists, albums, tracks, playlists] = await Promise.all([api("/music/artists"), api("/music/albums"), api("/music/tracks"), api("/music/playlists")]);
   if (operation !== loadOperation) return false;
   state.artists = artists || [];
   state.albums = albums || [];
   state.tracks = tracks || [];
+  state.playlists = playlists || [];
   if (!state.playbackRestored) {
     state.playbackRestored = true;
     restorePlayback();
   }
   if (state.selectedAlbum && !albumFor(state.selectedAlbum)) state.selectedAlbum = "";
+  if (state.selectedPlaylist && !playlistFor(state.selectedPlaylist)) state.selectedPlaylist = "";
+  if (state.playbackPlaylist && !playlistFor(state.playbackPlaylist)) state.playbackPlaylist = "";
   if (state.currentID && !currentTrack()) clearPlayer();
   else if (currentTrack()) {
     $("#player-title").textContent = currentTrack().title;
@@ -340,6 +415,7 @@ const renderNowPlaying = (track) => {
   $("#now-playing-art").innerHTML = track && artworkURL(track)
     ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">`
     : recordIcon;
+  $("#player-add-playlist").disabled = !track;
 };
 
 const setPlaybackIcon = (playing) => {
@@ -384,9 +460,41 @@ const playTrack = (id) => {
   if (state.lyricsPanelOpen) loadPanelLyrics(track);
 };
 
+const randomTrackID = (tracks) => {
+  const choices = tracks.filter((track) => track.id !== state.currentID);
+  return (choices[Math.floor(Math.random() * choices.length)] || tracks[0])?.id || "";
+};
+
+const nextTrackID = (offset, ended = false) => {
+  if (ended && state.loop) return state.currentID;
+  const tracks = activeTracks();
+  if (!tracks.length) return "";
+  if (state.shuffle && offset > 0) return randomTrackID(tracks);
+  return adjacentTrackID(tracks, state.currentID, offset);
+};
+
 const playFirstVisible = () => {
-  const track = filteredTracks()[0] || state.tracks[0];
+  const track = activeTracks()[0] || state.tracks[0];
   if (track) playTrack(track.id); else showMessage("There are no tracks to play.");
+};
+
+const playPlaylist = (id) => {
+  state.selectedPlaylist = id;
+  state.playbackPlaylist = id;
+  state.selectedAlbum = "";
+  if (state.view === "player") renderLibrary(); else renderPlaylistsPage();
+  const track = activeTracks()[0];
+  if (track) playTrack(track.id); else showMessage("This playlist has no playable tracks.");
+};
+
+const updatePlaybackModeUI = () => {
+  [["#shuffle-toggle", state.shuffle, "Shuffle"], ["#loop-toggle", state.loop, "Loop"]].forEach(([selector, active, label]) => {
+    const button = $(selector);
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", `${label} ${active ? "on" : "off"}`);
+    button.classList.toggle("text-amber-300", active);
+    button.classList.toggle("text-stone-500", !active);
+  });
 };
 
 const setLyricsEditor = (editing) => {
@@ -898,6 +1006,85 @@ const openTrackDialog = (track) => {
   $("#track-dialog").showModal();
 };
 
+const openPlaylistDialog = (playlist) => {
+  const form = $("#playlist-form"); resetDialogForm(form);
+  if (playlist) { form.dataset.id = playlist.id; form.elements.name.value = playlist.name; }
+  $("#playlist-dialog-title").textContent = playlist ? "Rename playlist" : "Create playlist";
+  $("#playlist-submit").textContent = playlist ? "Save playlist" : "Create playlist";
+  $("#playlist-dialog").showModal();
+};
+
+const matchingPlaylists = () => {
+  const query = state.playlistPickerQuery.toLowerCase();
+  return state.playlists.filter((playlist) => !query || playlist.name.toLowerCase().includes(query));
+};
+
+const renderPlaylistPicker = () => {
+  const track = trackFor(state.playlistPickerTrack);
+  $("#playlist-picker-track").textContent = track ? `${track.title} · ${track.artist_name}` : "";
+  const list = $("#playlist-picker-list");
+  const playlists = matchingPlaylists();
+  list.innerHTML = playlists.map((playlist) => `
+    <button type="button" data-picker-playlist="${playlist.id}" class="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left hover:border-amber-300/40 hover:bg-white/[0.04]">
+      <span class="min-w-0"><span class="block truncate text-sm font-semibold text-stone-100">${escapeHTML(playlist.name)}</span><span class="mt-0.5 block text-xs text-stone-500">${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? "" : "s"}</span></span>
+      <span class="text-xs font-semibold text-amber-300">Add</span>
+    </button>`).join("") || `<div class="rounded-xl border border-dashed border-white/10 p-5 text-center text-sm text-stone-500">No matching playlists.</div>`;
+  const query = state.playlistPickerQuery.trim();
+  const exists = state.playlists.some((playlist) => playlist.name.toLowerCase() === query.toLowerCase());
+  $("#playlist-picker-create").classList.toggle("hidden", !query || exists);
+  $("#playlist-picker-create").textContent = query ? `Create “${query}” and add` : "Create playlist and add";
+};
+
+const closePlaylistPicker = () => {
+  $("#playlist-picker").classList.add("hidden");
+};
+
+const positionPlaylistPicker = (anchor) => {
+  const picker = $("#playlist-picker");
+  picker.classList.remove("hidden");
+  const rect = anchor?.getBoundingClientRect();
+  const gap = 8;
+  const width = picker.offsetWidth;
+  const height = picker.offsetHeight;
+  const left = rect ? Math.min(Math.max(16, rect.right - width), innerWidth - width - 16) : Math.max(16, innerWidth - width - 16);
+  const below = rect ? rect.bottom + gap : 64;
+  const top = below + height <= innerHeight - 16 ? below : Math.max(16, (rect?.top || innerHeight) - height - gap);
+  picker.style.left = `${left}px`;
+  picker.style.top = `${top}px`;
+};
+
+const openPlaylistPicker = (trackID, anchor) => {
+  const track = trackFor(trackID);
+  if (!track) return;
+  state.playlistPickerTrack = trackID;
+  state.playlistPickerQuery = "";
+  $("#playlist-picker-search").value = "";
+  renderPlaylistPicker();
+  positionPlaylistPicker(anchor);
+  $("#playlist-picker-search").focus();
+};
+
+const addTrackToPlaylist = async (playlistID, trackID = state.playlistPickerTrack) => {
+  if (!playlistID) {
+    showMessage("Choose a playlist first.");
+    return;
+  }
+  const playlist = playlistFor(playlistID);
+  await api(`/music/playlists/${playlistID}/tracks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ track_id: trackID }) });
+  await load();
+  closePlaylistPicker();
+  showMessage(`Added to ${playlist?.name || "playlist"}.`);
+};
+
+const createPlaylistAndAddTrack = async () => {
+  const name = state.playlistPickerQuery.trim();
+  if (!name) return;
+  await api("/music/playlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+  await load();
+  const playlist = state.playlists.find((item) => item.name.toLowerCase() === name.toLowerCase());
+  if (playlist) await addTrackToPlaylist(playlist.id);
+};
+
 const openDelete = (type, item) => {
   state.pendingDelete = { type, id: item.id };
   $("#confirm-title").textContent = `Delete ${type}?`;
@@ -905,6 +1092,8 @@ const openDelete = (type, item) => {
     ? `Delete “${item.name}”? Artists with albums or tracks cannot be deleted; any conflict from the server will be shown here.`
     : type === "album"
       ? `Delete “${item.title}”? Its tracks become singles. The tracks and audio remain in your library.`
+      : type === "playlist"
+        ? `Delete “${item.name}”? Tracks stay in your library.`
       : `Delete “${item.title}”? Its audio file will be removed and cannot be recovered.`;
   $("#confirm-impact").textContent = impact;
   $("#confirm-impact").classList.remove("text-red-400");
@@ -932,13 +1121,23 @@ $("#track-dialog").addEventListener("close", () => {
 });
 
 document.querySelectorAll("[data-all-music]").forEach((button) => button.addEventListener("click", () => {
-  state.selectedAlbum = ""; state.query = ""; $("#search").value = ""; renderLibrary();
+  state.selectedAlbum = ""; state.playbackPlaylist = ""; state.query = ""; $("#search").value = ""; renderLibrary();
 }));
 $("#search").addEventListener("input", (event) => { state.query = event.currentTarget.value.trim().toLowerCase(); renderTracks(); });
+$("#track-list").addEventListener("click", (event) => {
+  const play = event.target.closest("[data-track-play]");
+  const add = event.target.closest("[data-track-add-playlist]");
+  if (add) openPlaylistPicker(add.dataset.trackAddPlaylist, add);
+  else if (play) { state.playbackPlaylist = ""; playTrack(play.dataset.trackPlay); }
+});
 $("#hero-play").addEventListener("click", playFirstVisible);
+$("#player-add-playlist").addEventListener("click", (event) => {
+  if (state.currentID) openPlaylistPicker(state.currentID, event.currentTarget);
+  else showMessage("Choose a track first.");
+});
 $("#lyrics-toggle").addEventListener("click", () => {
-  const open = state.view === "manage" || !state.lyricsPanelOpen;
-  if (state.view === "manage") history.pushState({}, "", "/");
+  const open = state.view !== "player" || !state.lyricsPanelOpen;
+  if (state.view !== "player") history.pushState({}, "", "/");
   setLyricsPanel(open);
 });
 $("#lyrics-back").addEventListener("click", () => setLyricsPanel(false));
@@ -947,6 +1146,42 @@ $("#lyrics-panel-display").addEventListener("click", (event) => {
   const lyric = event.target.closest("[data-time]");
   if (lyric) seekTo(Number(lyric.dataset.time));
 });
+$("#playlist-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-playlist-select]");
+  if (!button) return;
+  state.selectedPlaylist = button.dataset.playlistSelect;
+  renderPlaylistsPage();
+});
+$("#playlist-create").addEventListener("click", () => openPlaylistDialog());
+$("#playlist-play").addEventListener("click", () => { if (state.selectedPlaylist) playPlaylist(state.selectedPlaylist); });
+$("#playlist-rename").addEventListener("click", () => { const playlist = playlistFor(state.selectedPlaylist); if (playlist) openPlaylistDialog(playlist); });
+$("#playlist-delete").addEventListener("click", () => { const playlist = playlistFor(state.selectedPlaylist); if (playlist) openDelete("playlist", playlist); });
+$("#playlist-track-list").addEventListener("click", async (event) => {
+  const play = event.target.closest("[data-track-play]");
+  const remove = event.target.closest("[data-playlist-remove-track]");
+  if (play) { state.playbackPlaylist = state.selectedPlaylist; playTrack(play.dataset.trackPlay); }
+  if (remove && state.selectedPlaylist) {
+    await api(`/music/playlists/${state.selectedPlaylist}/tracks/${remove.dataset.playlistRemoveTrack}`, { method: "DELETE" });
+    await load();
+    renderPlaylistsPage();
+    showMessage("Track removed from playlist.");
+  }
+});
+$("#playlist-picker-search").addEventListener("input", (event) => { state.playlistPickerQuery = event.currentTarget.value; renderPlaylistPicker(); });
+$("#playlist-picker-list").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-picker-playlist]");
+  if (button) addTrackToPlaylist(button.dataset.pickerPlaylist).catch((error) => showMessage(error.message));
+});
+$("#playlist-picker-create").addEventListener("click", (event) => {
+  withButtonLoading(event.currentTarget, event.currentTarget.textContent, () => createPlaylistAndAddTrack()).catch((error) => showMessage(error.message));
+});
+$("#playlist-picker-close").addEventListener("click", closePlaylistPicker);
+document.addEventListener("click", (event) => {
+  if ($("#playlist-picker").classList.contains("hidden")) return;
+  if (event.target.closest("#playlist-picker") || event.target.closest("[data-track-add-playlist]") || event.target.closest("#player-add-playlist") || event.target.closest('[data-action="add-playlist"]')) return;
+  closePlaylistPicker();
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closePlaylistPicker(); });
 
 $("#manage-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-tab]"); if (!button) return;
@@ -962,8 +1197,9 @@ $("#manage-list").addEventListener("click", (event) => {
   const item = button.dataset.type === "artist" ? state.artists.find((artist) => artist.id === button.dataset.id)
     : button.dataset.type === "album" ? albumFor(button.dataset.id) : trackFor(button.dataset.id);
   if (!item) return;
-  if (button.dataset.action === "play") playTrack(item.id);
+  if (button.dataset.action === "play") { state.playbackPlaylist = ""; playTrack(item.id); }
   if (button.dataset.action === "lyrics") openLyricsEditor(item);
+  if (button.dataset.action === "add-playlist") openPlaylistPicker(item.id, button);
   if (button.dataset.action === "delete") openDelete(button.dataset.type, item);
   if (button.dataset.action === "edit") {
     if (button.dataset.type === "artist") openArtistDialog(item);
@@ -977,32 +1213,38 @@ $("#lyrics-cancel").addEventListener("click", () => { $("#lyrics-input").value =
 $("#lyrics-fetch").addEventListener("click", async () => {
   const track = trackFor(state.editorLyrics.trackID); if (!track) return;
   const trackID = track.id;
-  $("#lyrics-status").textContent = "Searching LRCLIB...";
-  try {
-    const lyrics = await fetchLyrics(track);
-    if (!$("#lyrics-dialog").open || state.editorLyrics.trackID !== trackID) return;
-    $("#lyrics-input").value = lyrics; $("#lyrics-status").textContent = "Lyrics found. Review and save them."; setLyricsEditor(true);
-  }
-  catch (error) { $("#lyrics-status").textContent = error.message; }
+  await withButtonLoading($("#lyrics-fetch"), "Fetching...", async () => {
+    $("#lyrics-status").textContent = "Searching LRCLIB...";
+    try {
+      const lyrics = await fetchLyrics(track);
+      if (!$("#lyrics-dialog").open || state.editorLyrics.trackID !== trackID) return;
+      $("#lyrics-input").value = lyrics; $("#lyrics-status").textContent = "Lyrics found. Review and save them."; setLyricsEditor(true);
+    }
+    catch (error) { $("#lyrics-status").textContent = error.message; }
+  });
 });
 $("#lyrics-save").addEventListener("click", async () => {
   const track = trackFor(state.editorLyrics.trackID); if (!track) return;
-  try {
-    const lyrics = $("#lyrics-input").value.trim(); await saveLyrics(track, lyrics);
-    state.editorLyrics.lines = parseEnhancedLRC(lyrics); $("#lyrics-status").textContent = lyrics ? "Lyrics saved." : "Lyrics cleared.";
-    setLyricsEditor(false);
-    renderLyrics($("#lyrics-display"), state.editorLyrics, "No synchronized lyrics", "Fetch from LRCLIB or add enhanced LRC manually.");
-    if (state.lyricsPanelOpen && track.id === state.currentID) loadPanelLyrics(track); else syncLyrics();
-  } catch (error) { $("#lyrics-status").textContent = error.message; }
+  await withButtonLoading($("#lyrics-save"), "Saving...", async () => {
+    try {
+      const lyrics = $("#lyrics-input").value.trim(); await saveLyrics(track, lyrics);
+      state.editorLyrics.lines = parseEnhancedLRC(lyrics); $("#lyrics-status").textContent = lyrics ? "Lyrics saved." : "Lyrics cleared.";
+      setLyricsEditor(false);
+      renderLyrics($("#lyrics-display"), state.editorLyrics, "No synchronized lyrics", "Fetch from LRCLIB or add enhanced LRC manually.");
+      if (state.lyricsPanelOpen && track.id === state.currentID) loadPanelLyrics(track); else syncLyrics();
+    } catch (error) { $("#lyrics-status").textContent = error.message; }
+  });
 });
 
 $("#artist-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget; const editing = Boolean(form.dataset.id);
   if (avatarMutating) { showMessage("Wait for the avatar update to finish."); return; }
-  try {
-    await api(editing ? `/music/artists/${form.dataset.id}` : "/music/artists", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.elements.name.value.trim() }) });
-    form.closest("dialog").close(); await load(); showMessage(editing ? "Artist updated." : "Artist added to your library.");
-  } catch (error) { showMessage(error.message); }
+  await withButtonLoading($("#artist-submit"), editing ? "Saving..." : "Adding...", async () => {
+    try {
+      await api(editing ? `/music/artists/${form.dataset.id}` : "/music/artists", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.elements.name.value.trim() }) });
+      form.closest("dialog").close(); await load(); showMessage(editing ? "Artist updated." : "Artist added to your library.");
+    } catch (error) { showMessage(error.message); }
+  });
 });
 
 $("#avatar-file").addEventListener("change", updateAvatarUploadButton);
@@ -1017,10 +1259,22 @@ $("#album-form").addEventListener("submit", async (event) => {
     showMessage("Wait for the cover import to finish.");
     return;
   }
-  try {
-    await api(editing ? `/music/albums/${form.dataset.id}` : "/music/albums", { method: editing ? "PATCH" : "POST", body: new FormData(form) });
-    form.closest("dialog").close(); await load(); showMessage(editing ? "Album updated." : "Album created.");
-  } catch (error) { showMessage(error.message); }
+  await withButtonLoading($("#album-submit"), editing ? "Saving..." : "Creating...", async () => {
+    try {
+      await api(editing ? `/music/albums/${form.dataset.id}` : "/music/albums", { method: editing ? "PATCH" : "POST", body: new FormData(form) });
+      form.closest("dialog").close(); await load(); showMessage(editing ? "Album updated." : "Album created.");
+    } catch (error) { showMessage(error.message); }
+  });
+});
+
+$("#playlist-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const form = event.currentTarget; const editing = Boolean(form.dataset.id);
+  await withButtonLoading($("#playlist-submit"), editing ? "Saving..." : "Creating...", async () => {
+    try {
+      await api(editing ? `/music/playlists/${form.dataset.id}` : "/music/playlists", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.elements.name.value.trim() }) });
+      form.closest("dialog").close(); await load(); showMessage(editing ? "Playlist renamed." : "Playlist created.");
+    } catch (error) { showMessage(error.message); }
+  });
 });
 
 $('#album-form input[name="cover"]').addEventListener("change", (event) => {
@@ -1120,28 +1374,34 @@ $("#track-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget; const editing = Boolean(form.dataset.id);
   if (trackCoverImporting) { showMessage("Wait for the cover import to finish."); return; }
   if (!state.duration) { showMessage("Wait for the audio duration to load."); return; }
-  try {
-    const data = new FormData(form); data.set("duration", String(state.duration));
-    const replacedActive = editing && form.dataset.id === state.currentID && form.elements.audio.files.length > 0;
-    const result = await api(editing ? `/music/tracks/${form.dataset.id}` : "/music/tracks", { method: editing ? "PATCH" : "POST", body: data });
-    const id = form.dataset.id || result.id; form.closest("dialog").close(); state.duration = 0; await load();
-    if (replacedActive) playTrack(id);
-    showMessage(editing ? "Track updated." : "Track uploaded.");
-    if (!editing) lookupLyricsInBackground(id).catch(() => {});
-  } catch (error) { showMessage(error.message); }
+  await withButtonLoading($("#track-submit"), editing ? "Saving..." : "Uploading...", async () => {
+    try {
+      const data = new FormData(form); data.set("duration", String(state.duration));
+      const replacedActive = editing && form.dataset.id === state.currentID && form.elements.audio.files.length > 0;
+      const result = await api(editing ? `/music/tracks/${form.dataset.id}` : "/music/tracks", { method: editing ? "PATCH" : "POST", body: data });
+      const id = form.dataset.id || result.id; form.closest("dialog").close(); state.duration = 0; await load();
+      if (replacedActive) playTrack(id);
+      showMessage(editing ? "Track updated." : "Track uploaded.");
+      if (!editing) lookupLyricsInBackground(id).catch(() => {});
+    } catch (error) { showMessage(error.message); }
+  });
 });
 
 $("#confirm-delete").addEventListener("click", async () => {
   if (!state.pendingDelete) return;
   const { type, id } = state.pendingDelete;
-  try {
-    await api(`/music/${type}s/${id}`, { method: "DELETE" });
-    if (type === "track" && id === state.currentID) clearPlayer();
-    $("#confirm-dialog").close(); state.pendingDelete = null; await load(); showMessage(`${type[0].toUpperCase()}${type.slice(1)} deleted.`);
-  } catch (error) {
-    $("#confirm-impact").textContent = error.message;
-    $("#confirm-impact").classList.add("text-red-400");
-  }
+  await withButtonLoading($("#confirm-delete"), "Deleting...", async () => {
+    try {
+      await api(`/music/${type}s/${id}`, { method: "DELETE" });
+      if (type === "track" && id === state.currentID) clearPlayer();
+      if (type === "playlist" && id === state.selectedPlaylist) state.selectedPlaylist = "";
+      if (type === "playlist" && id === state.playbackPlaylist) state.playbackPlaylist = "";
+      $("#confirm-dialog").close(); state.pendingDelete = null; await load(); showMessage(`${type[0].toUpperCase()}${type.slice(1)} deleted.`);
+    } catch (error) {
+      $("#confirm-impact").textContent = error.message;
+      $("#confirm-impact").classList.add("text-red-400");
+    }
+  });
 });
 
 $("#play-toggle").addEventListener("click", () => {
@@ -1149,9 +1409,11 @@ $("#play-toggle").addEventListener("click", () => {
 });
 $("#prev").addEventListener("click", () => {
   if (audio.currentTime > 3) audio.currentTime = 0;
-  else { const id = adjacentTrackID(state.tracks, state.currentID, -1); if (id) playTrack(id); }
+  else { const id = nextTrackID(-1); if (id) playTrack(id); }
 });
-$("#next").addEventListener("click", () => { const id = adjacentTrackID(state.tracks, state.currentID, 1); if (id) playTrack(id); });
+$("#next").addEventListener("click", () => { const id = nextTrackID(1); if (id) playTrack(id); });
+$("#shuffle-toggle").addEventListener("click", () => { state.shuffle = !state.shuffle; updatePlaybackModeUI(); });
+$("#loop-toggle").addEventListener("click", () => { state.loop = !state.loop; updatePlaybackModeUI(); });
 $("#volume-toggle").addEventListener("click", () => {
   if (audio.muted || audio.volume === 0) {
     if (audio.volume === 0) audio.volume = lastAudibleVolume;
@@ -1190,7 +1452,7 @@ seek.addEventListener("blur", () => { state.seeking = false; });
 
 audio.addEventListener("play", () => setPlaybackIcon(true));
 audio.addEventListener("pause", () => { setPlaybackIcon(false); persistPlayback(true); });
-audio.addEventListener("ended", () => { const id = adjacentTrackID(state.tracks, state.currentID, 1); if (id) playTrack(id); else setPlaybackIcon(false); });
+audio.addEventListener("ended", () => { const id = nextTrackID(1, true); if (id) playTrack(id); else setPlaybackIcon(false); });
 audio.addEventListener("error", () => showMessage(`Playback error ${audio.error?.code || "unknown"}.`));
 audio.addEventListener("loadedmetadata", () => {
   $("#seek").max = audio.duration || 0;
@@ -1221,6 +1483,7 @@ audio.addEventListener("volumechange", () => {
 window.addEventListener("beforeunload", () => persistPlayback(true));
 
 updateVolumeUI();
+updatePlaybackModeUI();
 renderRoute();
 load().catch((error) => {
   $("#track-list").innerHTML = emptyState("Library unavailable", "The music service could not be reached. Try again shortly.");
