@@ -54,6 +54,12 @@ func TestValidUploadType(t *testing.T) {
 	}
 }
 
+func TestServedContentTypeNormalizesM4A(t *testing.T) {
+	if got := servedContentType("track.m4a", "audio/x-m4a"); got != "audio/mp4" {
+		t.Fatalf("content type = %q, want audio/mp4", got)
+	}
+}
+
 func TestValidUploadRejectsHTMLBody(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "upload")
 	if err != nil {

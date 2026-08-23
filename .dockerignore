@@ -1,0 +1,9 @@
+.git
+.github
+.env
+data
+mysong.exe
+*.log
+tmp
+dist
+build

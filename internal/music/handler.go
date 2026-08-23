@@ -843,12 +843,23 @@ func (h *Handler) ServeObject(w http.ResponseWriter, r *http.Request, object str
 	}
 	defer file.Close()
 
-	if validUploadType(info.ContentType, "audio") || validUploadType(info.ContentType, "image") {
-		w.Header().Set("Content-Type", info.ContentType)
+	if contentType := servedContentType(info.Key, info.ContentType); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
 	} else {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	http.ServeContent(w, r, filepath.Base(info.Key), info.LastModified, file)
+}
+
+func servedContentType(name string, contentType string) string {
+	if strings.EqualFold(filepath.Ext(name), ".m4a") || strings.EqualFold(contentType, "audio/x-m4a") {
+		return "audio/mp4"
+	}
+	if validUploadType(contentType, "audio") || validUploadType(contentType, "image") {
+		return contentType
+	}
+
+	return ""
 }

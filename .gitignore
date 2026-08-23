@@ -1,1 +1,4 @@
 data/
+.env
+mysong
+mysong.exe
