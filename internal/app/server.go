@@ -13,9 +13,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
 
-	"github.com/lalyod/mysong/internal/db"
-	minioClient "github.com/lalyod/mysong/internal/minio"
-	"github.com/lalyod/mysong/internal/music"
+	"github.com/lalyod/utane/internal/db"
+	minioClient "github.com/lalyod/utane/internal/minio"
+	"github.com/lalyod/utane/internal/music"
 )
 
 func Serve() error {

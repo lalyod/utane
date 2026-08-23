@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/lalyod/mysong/internal/app"
+	"github.com/lalyod/utane/internal/app"
 )
 
 func main() {

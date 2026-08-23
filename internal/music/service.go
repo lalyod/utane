@@ -31,8 +31,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 
-	minioClient "github.com/lalyod/mysong/internal/minio"
-	"github.com/lalyod/mysong/internal/model"
+	minioClient "github.com/lalyod/utane/internal/minio"
+	"github.com/lalyod/utane/internal/model"
 )
 
 type Service struct {
@@ -60,7 +60,7 @@ var (
 
 const (
 	maxCoverSize = 15 << 20
-	userAgent    = "HokanNoUta/1.0 (https://github.com/lalyod/hokan-no-uta)"
+	userAgent    = "Utane/1.0 (https://github.com/lalyod/utane)"
 )
 
 type CoverCandidate struct {
@@ -812,7 +812,6 @@ func (s *Service) PatchArtist(ctx context.Context, id string, name string) error
 		SET name = $1
 		WHERE id = $2
 		`, name, id)
-
 	if err != nil {
 		return serviceError(err)
 	}
@@ -922,7 +921,6 @@ func (s *Service) CreateTrack(
 		) VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id
 	`, artistID, album, title, duration, object, number).Scan(&id)
-
 	if err != nil {
 		s.removeObject(ctx, object)
 
@@ -1230,7 +1228,7 @@ func getLyrics(ctx context.Context, client *http.Client, requestURL string, resu
 	if err != nil {
 		return err
 	}
-	request.Header.Set("User-Agent", "HokanNoUta/1.0")
+	request.Header.Set("User-Agent", "Utane/1.0")
 
 	response, err := client.Do(request)
 	if err != nil {
@@ -1390,7 +1388,6 @@ func (s *Service) UploadFile(
 			ContentType: header.Header.Get("Content-Type"),
 		},
 	)
-
 	if err != nil {
 		return "", err
 	}

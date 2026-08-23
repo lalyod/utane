@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
-	"github.com/lalyod/mysong/internal/db"
+	"github.com/lalyod/utane/internal/db"
 )
 
 type migration struct {

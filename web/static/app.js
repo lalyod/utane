@@ -29,7 +29,7 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector)
 const audio = $('#audio')
-const playbackKey = 'hokan-no-uta.playback'
+const playbackKey = 'utane.playback'
 const savedPlayback = (() => {
     try {
         return parsePlaybackState(localStorage.getItem(playbackKey))

@@ -1,4 +1,4 @@
-module github.com/lalyod/mysong
+module github.com/lalyod/utane
 
 go 1.25.3
 

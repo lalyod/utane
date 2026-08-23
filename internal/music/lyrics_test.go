@@ -85,7 +85,7 @@ func TestLookupLyrics(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			searches := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if got := r.Header.Get("User-Agent"); got != "HokanNoUta/1.0" {
+				if got := r.Header.Get("User-Agent"); got != "Utane/1.0" {
 					t.Errorf("User-Agent = %q", got)
 				}
 				if got := r.URL.Query().Get("token"); got != "configured" {

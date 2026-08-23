@@ -2,7 +2,7 @@ services:
   app:
     build: .
     restart: unless-stopped
-    command: ["sh", "-c", "./mysong db migrate && ./mysong serve"]
+    command: ["sh", "-c", "./utane db migrate && ./utane serve"]
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
