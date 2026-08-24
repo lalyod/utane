@@ -1,17 +1,44 @@
-import { activeAt, centeredScrollTop, parseEnhancedLRC, scriptLang } from "./lyrics.mjs?v=4";
-import { adjacentTrackID, lyricsLayout, viewForPath } from "./navigation.mjs?v=4";
-import { clampTime, parsePlaybackState, resumeTime } from "./playback.mjs?v=4";
-import { trackArtworkURL } from "./artwork.mjs?v=4";
+import {
+    activeAt,
+    centeredScrollTop,
+    parseEnhancedLRC,
+    scriptLang,
+} from './lyrics.mjs?v=4'
+import {
+    adjacentTrackID,
+    lyricsLayout,
+    viewForPath,
+} from './navigation.mjs?v=4'
+import { clampTime, parsePlaybackState, resumeTime } from './playback.mjs?v=4'
+import { trackArtworkURL } from './artwork.mjs?v=4'
+import { api } from './helper/api.js'
+import { escapeHTML } from './helper/template.js'
 
 const state = {
-  artists: [], albums: [], tracks: [], playlists: [], currentID: "", duration: 0,
-  selectedAlbum: "", selectedPlaylist: "", playbackPlaylist: "", query: "", view: viewForPath(location.pathname),
-  manageTab: "artists", manageQuery: "", lyricsPanelOpen: false, shuffle: false, loop: false,
-  playlistPickerTrack: "", playlistPickerQuery: "",
-  panelLyrics: { trackID: "", lines: [], activeLyric: -1, activeWord: -1 },
-  editorLyrics: { trackID: "", lines: [], activeLyric: -1, activeWord: -1 },
-  pendingDelete: null, seeking: false, playbackRestored: false,
-};
+    artists: [],
+    albums: [],
+    tracks: [],
+    playlists: [],
+    currentID: '',
+    duration: 0,
+    selectedAlbum: '',
+    selectedPlaylist: '',
+    playbackPlaylist: '',
+    query: '',
+    view: viewForPath(location.pathname),
+    manageTab: 'artists',
+    manageQuery: '',
+    lyricsPanelOpen: false,
+    shuffle: false,
+    loop: false,
+    playlistPickerTrack: '',
+    playlistPickerQuery: '',
+    panelLyrics: { trackID: '', lines: [], activeLyric: -1, activeWord: -1 },
+    editorLyrics: { trackID: '', lines: [], activeLyric: -1, activeWord: -1 },
+    pendingDelete: null,
+    seeking: false,
+    playbackRestored: false,
+}
 
 const $ = (selector) => document.querySelector(selector)
 const audio = $('#audio')
@@ -42,31 +69,10 @@ let pendingResumeTime = null
 let lastSavedSecond = -1
 let lastAudibleVolume = savedPlayback?.volume > 0 ? savedPlayback.volume : 1
 
-const api = async (path, options) => {
-    const response = await fetch(path, options)
-    if (!response.ok) throw new Error((await response.text()).trim())
-    return response.headers.get('content-type')?.includes('application/json')
-        ? response.json()
-        : null
-}
-
 const formatTime = (seconds) => {
     const total = Math.max(0, Math.round(seconds || 0))
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
-
-const escapeHTML = (value) =>
-    String(value ?? '').replace(
-        /[&<>"']/g,
-        (char) =>
-            ({
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#39;',
-            })[char]
-    )
 
 const showMessage = (text) => {
     clearTimeout(messageTimer)
@@ -77,13 +83,17 @@ const showMessage = (text) => {
 }
 
 const withButtonLoading = async (button, text, action) => {
-  if (button.disabled) return;
-  const label = button.textContent;
-  button.disabled = true;
-  button.textContent = text;
-  try { return await action(); }
-  finally { button.disabled = false; button.textContent = label; }
-};
+    if (button.disabled) return
+    const label = button.textContent
+    button.disabled = true
+    button.textContent = text
+    try {
+        return await action()
+    } finally {
+        button.disabled = false
+        button.textContent = label
+    }
+}
 
 const persistPlayback = (force = false) => {
     if (!state.currentID || pendingResumeTime !== null) return
@@ -133,15 +143,21 @@ const recordIcon = `
     <svg aria-hidden="true" class="h-10 w-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M12 4a8 8 0 0 1 8 8"/></svg>
   </div>`
 
-const albumFor = (id) => state.albums.find((album) => album.id === id);
-const artistFor = (id) => state.artists.find((artist) => artist.id === id);
-const trackFor = (id) => state.tracks.find((track) => track.id === id);
-const playlistFor = (id) => state.playlists.find((playlist) => playlist.id === id);
-const currentTrack = () => trackFor(state.currentID);
-const coverURL = (albumID) => albumFor(albumID)?.has_cover ? `/music/albums/${albumID}/cover` : "";
-const artworkURL = (track) => trackArtworkURL(track, albumFor(track?.album_id));
-const artistInitial = (name) => Array.from(String(name || "").trim())[0]?.toLocaleUpperCase() || "?";
-const avatarURL = (artist) => artist?.has_avatar ? `/music/artists/${encodeURIComponent(artist.id)}/avatar?v=${avatarRevision}` : "";
+const albumFor = (id) => state.albums.find((album) => album.id === id)
+const artistFor = (id) => state.artists.find((artist) => artist.id === id)
+const trackFor = (id) => state.tracks.find((track) => track.id === id)
+const playlistFor = (id) =>
+    state.playlists.find((playlist) => playlist.id === id)
+const currentTrack = () => trackFor(state.currentID)
+const coverURL = (albumID) =>
+    albumFor(albumID)?.has_cover ? `/music/albums/${albumID}/cover` : ''
+const artworkURL = (track) => trackArtworkURL(track, albumFor(track?.album_id))
+const artistInitial = (name) =>
+    Array.from(String(name || '').trim())[0]?.toLocaleUpperCase() || '?'
+const avatarURL = (artist) =>
+    artist?.has_avatar
+        ? `/music/artists/${encodeURIComponent(artist.id)}/avatar?v=${avatarRevision}`
+        : ''
 
 const artistAvatarHTML = (artist, size) =>
     `<span class="relative grid ${size} shrink-0 place-items-center overflow-hidden rounded-full bg-amber-300/10 font-semibold text-amber-200 ring-1 ring-white/10"><span aria-hidden="true">${escapeHTML(artistInitial(artist.name))}</span>${artist.has_avatar ? `<img data-artist-avatar src="${avatarURL(artist)}" alt="" class="absolute inset-0 h-full w-full object-cover">` : ''}</span>`
@@ -182,10 +198,10 @@ const filteredTracks = () =>
     })
 
 const activeTracks = () => {
-  const playlist = playlistFor(state.playbackPlaylist);
-  if (!playlist) return filteredTracks();
-  return playlist.track_ids.map(trackFor).filter(Boolean);
-};
+    const playlist = playlistFor(state.playbackPlaylist)
+    if (!playlist) return filteredTracks()
+    return playlist.track_ids.map(trackFor).filter(Boolean)
+}
 
 const fillArtistSelects = () => {
     document.querySelectorAll('select[name="artist_id"]').forEach((select) => {
@@ -289,7 +305,7 @@ const renderTracks = () => {
       <span class="flex min-w-0 items-center gap-3"><span class="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-white/[0.05]">${artworkURL(track) ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">` : recordIcon}</span><span class="min-w-0"><span class="block truncate text-sm font-medium ${active ? 'text-amber-300' : 'text-stone-100'}">${escapeHTML(track.title)}</span><span class="mt-0.5 block truncate text-xs text-stone-500">${escapeHTML(track.artist_name)}</span></span></span>
       <span class="hidden truncate pr-4 text-sm text-stone-500 md:block">${escapeHTML(track.album_title || 'Single')}</span>
       <span class="text-right text-xs tabular-nums text-stone-600">${formatTime(track.duration)}</span>`
-        button.addEventListener('click', () => playTrack(track.id))
+        button.addEventListener('click', () => playLibraryTrack(track.id))
         $('#track-list').append(button)
     })
 }
@@ -368,6 +384,49 @@ const renderManage = () => {
     wireAvatarFallbacks($('#manage-list'))
 }
 
+const renderPlaylistsPage = () => {
+    if (state.selectedPlaylist && !playlistFor(state.selectedPlaylist))
+        state.selectedPlaylist = ''
+    if (!state.selectedPlaylist && state.playlists.length)
+        state.selectedPlaylist = state.playlists[0].id
+
+    $('#playlist-list').innerHTML =
+        state.playlists
+            .map((playlist) => {
+                const selected = playlist.id === state.selectedPlaylist
+                return `<button type="button" data-playlist="${playlist.id}" class="w-full rounded-2xl border px-4 py-3 text-left transition ${selected ? 'border-amber-300/50 bg-amber-300/[0.08]' : 'border-white/[0.07] bg-white/[0.025] hover:bg-white/[0.05]'}"><span class="block truncate text-sm font-semibold ${selected ? 'text-amber-300' : 'text-stone-100'}">${escapeHTML(playlist.name)}</span><span class="mt-1 block text-xs text-stone-500">${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? '' : 's'}</span></button>`
+            })
+            .join('') ||
+        emptyState('No playlists yet', 'Create one to group tracks.', 'py-8')
+
+    const playlist = playlistFor(state.selectedPlaylist)
+    $('#playlist-detail-title').textContent =
+        playlist?.name || 'Choose a playlist'
+    $('#playlist-detail-meta').textContent = playlist
+        ? `${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? '' : 's'}`
+        : 'Select one to see its tracks.'
+    $('#playlist-detail-actions').classList.toggle('hidden', !playlist)
+    $('#playlist-detail-actions').classList.toggle('flex', Boolean(playlist))
+
+    const tracks = playlist
+        ? playlist.track_ids.map(trackFor).filter(Boolean)
+        : []
+    $('#playlist-track-list').innerHTML =
+        tracks
+            .map(
+                (track, index) =>
+                    `<div class="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center border-b border-white/[0.045] px-4 py-3 last:border-0 md:px-5 ${track.id === state.currentID ? 'bg-amber-300/[0.07]' : ''}"><button type="button" data-playlist-track="${track.id}" class="contents text-left"><span class="text-xs tabular-nums ${track.id === state.currentID ? 'text-amber-300' : 'text-stone-600'}">${track.id === state.currentID ? '●' : index + 1}</span><span class="min-w-0"><span class="block truncate text-sm font-medium ${track.id === state.currentID ? 'text-amber-300' : 'text-stone-100'}">${escapeHTML(track.title)}</span><span class="mt-0.5 block truncate text-xs text-stone-500">${escapeHTML(track.artist_name)}</span></span></button><button type="button" data-remove-playlist-track="${track.id}" class="rounded-full px-3 py-1 text-xs font-semibold text-stone-500 hover:bg-white/[0.07] hover:text-red-300">Remove</button></div>`
+            )
+            .join('') ||
+        emptyState(
+            playlist ? 'No tracks yet' : 'No playlist selected',
+            playlist
+                ? 'Add tracks from the player.'
+                : 'Choose a playlist first.',
+            'py-14'
+        )
+}
+
 const renderRoute = () => {
     state.view = viewForPath(location.pathname)
     const layout = lyricsLayout(
@@ -388,6 +447,7 @@ const renderRoute = () => {
     $('#lyrics-panel').classList.toggle('hidden', !layout.panel)
     $('#lyrics-panel').classList.toggle('flex', layout.panel)
     $('#manage-view').classList.toggle('hidden', state.view !== 'manage')
+    $('#playlists-view').classList.toggle('hidden', state.view !== 'playlists')
     $('#player-search-wrap').classList.toggle(
         'hidden',
         state.view !== 'player' || (layout.panel && mobileLayout.matches)
@@ -409,6 +469,7 @@ const renderRoute = () => {
         else link.removeAttribute('aria-current')
     })
     if (state.view === 'manage') renderManage()
+    else if (state.view === 'playlists') renderPlaylistsPage()
     else renderLibrary()
 }
 
@@ -417,20 +478,27 @@ const render = () => {
     fillAlbumSelect()
     renderLibrary()
     renderManage()
+    renderPlaylistsPage()
     renderRoute()
 }
 
 const load = async () => {
     const operation = ++loadOperation
-    const [artists, albums, tracks] = await Promise.all([
+    const [artists, albums, tracks, playlists] = await Promise.all([
         api('/music/artists'),
         api('/music/albums'),
         api('/music/tracks'),
+        api('/music/playlists'),
     ])
     if (operation !== loadOperation) return false
     state.artists = artists || []
     state.albums = albums || []
     state.tracks = tracks || []
+    state.playlists = playlists || []
+    if (state.selectedPlaylist && !playlistFor(state.selectedPlaylist))
+        state.selectedPlaylist = ''
+    if (state.playbackPlaylist && !playlistFor(state.playbackPlaylist))
+        state.playbackPlaylist = ''
     if (!state.playbackRestored) {
         state.playbackRestored = true
         restorePlayback()
@@ -466,6 +534,7 @@ const renderNowPlaying = (track) => {
         track && artworkURL(track)
             ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">`
             : recordIcon
+    $('#player-add-playlist').disabled = !track
 }
 
 const setPlaybackIcon = (playing) => {
@@ -514,46 +583,61 @@ const playTrack = (id) => {
             )
         )
     renderTracks()
+    if (state.view === 'playlists') renderPlaylistsPage()
     if (state.lyricsPanelOpen) loadPanelLyrics(track)
 }
 
+const playLibraryTrack = (id) => {
+    state.playbackPlaylist = ''
+    playTrack(id)
+}
+
 const randomTrackID = (tracks) => {
-  const choices = tracks.filter((track) => track.id !== state.currentID);
-  return (choices[Math.floor(Math.random() * choices.length)] || tracks[0])?.id || "";
-};
+    const choices = tracks.filter((track) => track.id !== state.currentID)
+    return (
+        (choices[Math.floor(Math.random() * choices.length)] || tracks[0])
+            ?.id || ''
+    )
+}
 
 const nextTrackID = (offset, ended = false) => {
-  if (ended && state.loop) return state.currentID;
-  const tracks = activeTracks();
-  if (!tracks.length) return "";
-  if (state.shuffle && offset > 0) return randomTrackID(tracks);
-  return adjacentTrackID(tracks, state.currentID, offset);
-};
+    if (ended && state.loop) return state.currentID
+    const tracks = activeTracks()
+    if (!tracks.length) return ''
+    if (state.shuffle && offset > 0) return randomTrackID(tracks)
+    return adjacentTrackID(tracks, state.currentID, offset)
+}
 
 const playFirstVisible = () => {
     const track = filteredTracks()[0] || state.tracks[0]
-    if (track) playTrack(track.id)
+    if (track) playLibraryTrack(track.id)
     else showMessage('There are no tracks to play.')
 }
 
 const playPlaylist = (id) => {
-  state.selectedPlaylist = id;
-  state.playbackPlaylist = id;
-  state.selectedAlbum = "";
-  if (state.view === "player") renderLibrary(); else renderPlaylistsPage();
-  const track = activeTracks()[0];
-  if (track) playTrack(track.id); else showMessage("This playlist has no playable tracks.");
-};
+    if (!playlistFor(id)) return
+    state.selectedPlaylist = id
+    state.playbackPlaylist = id
+    state.selectedAlbum = ''
+    if (state.view === 'player') renderLibrary()
+    else renderPlaylistsPage()
+    const track = activeTracks()[0]
+    if (track) playTrack(track.id)
+    else showMessage('This playlist has no playable tracks.')
+}
 
 const updatePlaybackModeUI = () => {
-  [["#shuffle-toggle", state.shuffle, "Shuffle"], ["#loop-toggle", state.loop, "Loop"]].forEach(([selector, active, label]) => {
-    const button = $(selector);
-    button.setAttribute("aria-pressed", String(active));
-    button.setAttribute("aria-label", `${label} ${active ? "on" : "off"}`);
-    button.classList.toggle("text-amber-300", active);
-    button.classList.toggle("text-stone-500", !active);
-  });
-};
+    ;[
+        ['#shuffle-toggle', state.shuffle, 'Shuffle'],
+        ['#loop-toggle', state.loop, 'Loop'],
+    ].forEach(([selector, active, label]) => {
+        const button = $(selector)
+        button.setAttribute('aria-pressed', String(active))
+        button.setAttribute('aria-label', `${label} ${active ? 'on' : 'off'}`)
+        button.classList.toggle('text-amber-300', active)
+        button.classList.toggle('text-stone-500', !active)
+    })
+}
 
 const setLyricsEditor = (editing) => {
     $('#lyrics-display').classList.toggle('hidden', editing)
@@ -1253,83 +1337,123 @@ const openTrackDialog = (track) => {
 }
 
 const openPlaylistDialog = (playlist) => {
-  const form = $("#playlist-form"); resetDialogForm(form);
-  if (playlist) { form.dataset.id = playlist.id; form.elements.name.value = playlist.name; }
-  $("#playlist-dialog-title").textContent = playlist ? "Rename playlist" : "Create playlist";
-  $("#playlist-submit").textContent = playlist ? "Save playlist" : "Create playlist";
-  $("#playlist-dialog").showModal();
-};
+    const form = $('#playlist-form')
+    resetDialogForm(form)
+    if (playlist) {
+        form.dataset.id = playlist.id
+        form.elements.name.value = playlist.name
+    }
+    $('#playlist-dialog-title').textContent = playlist
+        ? 'Rename playlist'
+        : 'Create playlist'
+    $('#playlist-submit').textContent = playlist
+        ? 'Save playlist'
+        : 'Create playlist'
+    $('#playlist-dialog').showModal()
+}
 
 const matchingPlaylists = () => {
-  const query = state.playlistPickerQuery.toLowerCase();
-  return state.playlists.filter((playlist) => !query || playlist.name.toLowerCase().includes(query));
-};
+    const query = state.playlistPickerQuery.toLowerCase()
+    return state.playlists.filter(
+        (playlist) => !query || playlist.name.toLowerCase().includes(query)
+    )
+}
 
 const renderPlaylistPicker = () => {
-  const track = trackFor(state.playlistPickerTrack);
-  $("#playlist-picker-track").textContent = track ? `${track.title} · ${track.artist_name}` : "";
-  const list = $("#playlist-picker-list");
-  const playlists = matchingPlaylists();
-  list.innerHTML = playlists.map((playlist) => `
+    const track = trackFor(state.playlistPickerTrack)
+    $('#playlist-picker-track').textContent = track
+        ? `${track.title} · ${track.artist_name}`
+        : ''
+    const list = $('#playlist-picker-list')
+    const playlists = matchingPlaylists()
+    list.innerHTML =
+        playlists
+            .map(
+                (playlist) => `
     <button type="button" data-picker-playlist="${playlist.id}" class="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-left hover:border-amber-300/40 hover:bg-white/[0.04]">
-      <span class="min-w-0"><span class="block truncate text-sm font-semibold text-stone-100">${escapeHTML(playlist.name)}</span><span class="mt-0.5 block text-xs text-stone-500">${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? "" : "s"}</span></span>
+      <span class="min-w-0"><span class="block truncate text-sm font-semibold text-stone-100">${escapeHTML(playlist.name)}</span><span class="mt-0.5 block text-xs text-stone-500">${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? '' : 's'}</span></span>
       <span class="text-xs font-semibold text-amber-300">Add</span>
-    </button>`).join("") || `<div class="rounded-xl border border-dashed border-white/10 p-5 text-center text-sm text-stone-500">No matching playlists.</div>`;
-  const query = state.playlistPickerQuery.trim();
-  const exists = state.playlists.some((playlist) => playlist.name.toLowerCase() === query.toLowerCase());
-  $("#playlist-picker-create").classList.toggle("hidden", !query || exists);
-  $("#playlist-picker-create").textContent = query ? `Create “${query}” and add` : "Create playlist and add";
-};
+    </button>`
+            )
+            .join('') ||
+        `<div class="rounded-xl border border-dashed border-white/10 p-5 text-center text-sm text-stone-500">No matching playlists.</div>`
+    const query = state.playlistPickerQuery.trim()
+    const exists = state.playlists.some(
+        (playlist) => playlist.name.toLowerCase() === query.toLowerCase()
+    )
+    $('#playlist-picker-create').classList.toggle('hidden', !query || exists)
+    $('#playlist-picker-create').textContent = query
+        ? `Create “${query}” and add`
+        : 'Create playlist and add'
+}
 
 const closePlaylistPicker = () => {
-  $("#playlist-picker").classList.add("hidden");
-};
+    $('#playlist-picker').classList.add('hidden')
+}
 
 const positionPlaylistPicker = (anchor) => {
-  const picker = $("#playlist-picker");
-  picker.classList.remove("hidden");
-  const rect = anchor?.getBoundingClientRect();
-  const gap = 8;
-  const width = picker.offsetWidth;
-  const height = picker.offsetHeight;
-  const left = rect ? Math.min(Math.max(16, rect.right - width), innerWidth - width - 16) : Math.max(16, innerWidth - width - 16);
-  const below = rect ? rect.bottom + gap : 64;
-  const top = below + height <= innerHeight - 16 ? below : Math.max(16, (rect?.top || innerHeight) - height - gap);
-  picker.style.left = `${left}px`;
-  picker.style.top = `${top}px`;
-};
+    const picker = $('#playlist-picker')
+    picker.classList.remove('hidden')
+    const rect = anchor?.getBoundingClientRect()
+    const gap = 8
+    const width = picker.offsetWidth
+    const height = picker.offsetHeight
+    const left = rect
+        ? Math.min(Math.max(16, rect.right - width), innerWidth - width - 16)
+        : Math.max(16, innerWidth - width - 16)
+    const below = rect ? rect.bottom + gap : 64
+    const top =
+        below + height <= innerHeight - 16
+            ? below
+            : Math.max(16, (rect?.top || innerHeight) - height - gap)
+    picker.style.left = `${left}px`
+    picker.style.top = `${top}px`
+}
 
 const openPlaylistPicker = (trackID, anchor) => {
-  const track = trackFor(trackID);
-  if (!track) return;
-  state.playlistPickerTrack = trackID;
-  state.playlistPickerQuery = "";
-  $("#playlist-picker-search").value = "";
-  renderPlaylistPicker();
-  positionPlaylistPicker(anchor);
-  $("#playlist-picker-search").focus();
-};
+    const track = trackFor(trackID)
+    if (!track) return
+    state.playlistPickerTrack = trackID
+    state.playlistPickerQuery = ''
+    $('#playlist-picker-search').value = ''
+    renderPlaylistPicker()
+    positionPlaylistPicker(anchor)
+    $('#playlist-picker-search').focus()
+}
 
-const addTrackToPlaylist = async (playlistID, trackID = state.playlistPickerTrack) => {
-  if (!playlistID) {
-    showMessage("Choose a playlist first.");
-    return;
-  }
-  const playlist = playlistFor(playlistID);
-  await api(`/music/playlists/${playlistID}/tracks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ track_id: trackID }) });
-  await load();
-  closePlaylistPicker();
-  showMessage(`Added to ${playlist?.name || "playlist"}.`);
-};
+const addTrackToPlaylist = async (
+    playlistID,
+    trackID = state.playlistPickerTrack
+) => {
+    if (!playlistID) {
+        showMessage('Choose a playlist first.')
+        return
+    }
+    const playlist = playlistFor(playlistID)
+    await api(`/music/playlists/${playlistID}/tracks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: trackID }),
+    })
+    await load()
+    closePlaylistPicker()
+    showMessage(`Added to ${playlist?.name || 'playlist'}.`)
+}
 
 const createPlaylistAndAddTrack = async () => {
-  const name = state.playlistPickerQuery.trim();
-  if (!name) return;
-  await api("/music/playlists", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
-  await load();
-  const playlist = state.playlists.find((item) => item.name.toLowerCase() === name.toLowerCase());
-  if (playlist) await addTrackToPlaylist(playlist.id);
-};
+    const name = state.playlistPickerQuery.trim()
+    if (!name) return
+    await api('/music/playlists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+    })
+    await load()
+    const playlist = state.playlists.find(
+        (item) => item.name.toLowerCase() === name.toLowerCase()
+    )
+    if (playlist) await addTrackToPlaylist(playlist.id)
+}
 
 const openDelete = (type, item) => {
     state.pendingDelete = { type, id: item.id }
@@ -1339,7 +1463,9 @@ const openDelete = (type, item) => {
             ? `Delete “${item.name}”? Artists with albums or tracks cannot be deleted; any conflict from the server will be shown here.`
             : type === 'album'
               ? `Delete “${item.title}”? Its tracks become singles. The tracks and audio remain in your library.`
-              : `Delete “${item.title}”? Its audio file will be removed and cannot be recovered.`
+              : type === 'playlist'
+                ? `Delete “${item.name}”? The tracks stay in your library.`
+                : `Delete “${item.title}”? Its audio file will be removed and cannot be recovered.`
     $('#confirm-impact').textContent = impact
     $('#confirm-impact').classList.remove('text-red-400')
     $('#confirm-dialog').showModal()
@@ -1390,9 +1516,17 @@ $('#search').addEventListener('input', (event) => {
     renderTracks()
 })
 $('#hero-play').addEventListener('click', playFirstVisible)
+$('#shuffle-toggle').addEventListener('click', () => {
+    state.shuffle = !state.shuffle
+    updatePlaybackModeUI()
+})
+$('#loop-toggle').addEventListener('click', () => {
+    state.loop = !state.loop
+    updatePlaybackModeUI()
+})
 $('#lyrics-toggle').addEventListener('click', () => {
-    const open = state.view === 'manage' || !state.lyricsPanelOpen
-    if (state.view === 'manage') history.pushState({}, '', '/')
+    const open = state.view !== 'player' || !state.lyricsPanelOpen
+    if (state.view !== 'player') history.pushState({}, '', '/')
     setLyricsPanel(open)
 })
 $('#lyrics-back').addEventListener('click', () => setLyricsPanel(false))
@@ -1430,7 +1564,7 @@ $('#manage-list').addEventListener('click', (event) => {
               ? albumFor(button.dataset.id)
               : trackFor(button.dataset.id)
     if (!item) return
-    if (button.dataset.action === 'play') playTrack(item.id)
+    if (button.dataset.action === 'play') playLibraryTrack(item.id)
     if (button.dataset.action === 'lyrics') openLyricsEditor(item)
     if (button.dataset.action === 'delete')
         openDelete(button.dataset.type, item)
@@ -1440,6 +1574,81 @@ $('#manage-list').addEventListener('click', (event) => {
         else openTrackDialog(item)
     }
 })
+
+$('#playlist-create').addEventListener('click', () => openPlaylistDialog())
+$('#playlist-form').addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const form = event.currentTarget
+    const editing = Boolean(form.dataset.id)
+    try {
+        await api(
+            editing
+                ? `/music/playlists/${form.dataset.id}`
+                : '/music/playlists',
+            {
+                method: editing ? 'PATCH' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: form.elements.name.value.trim() }),
+            }
+        )
+        form.closest('dialog').close()
+        await load()
+        showMessage(editing ? 'Playlist renamed.' : 'Playlist created.')
+    } catch (error) {
+        showMessage(error.message)
+    }
+})
+$('#playlist-list').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-playlist]')
+    if (!button) return
+    state.selectedPlaylist = button.dataset.playlist
+    renderPlaylistsPage()
+})
+$('#playlist-play').addEventListener('click', () =>
+    playPlaylist(state.selectedPlaylist)
+)
+$('#playlist-rename').addEventListener('click', () => {
+    const playlist = playlistFor(state.selectedPlaylist)
+    if (playlist) openPlaylistDialog(playlist)
+})
+$('#playlist-delete').addEventListener('click', () => {
+    const playlist = playlistFor(state.selectedPlaylist)
+    if (playlist) openDelete('playlist', playlist)
+})
+$('#playlist-track-list').addEventListener('click', async (event) => {
+    const remove = event.target.closest('[data-remove-playlist-track]')
+    if (remove) {
+        await api(
+            `/music/playlists/${state.selectedPlaylist}/tracks/${remove.dataset.removePlaylistTrack}`,
+            { method: 'DELETE' }
+        )
+        await load()
+        showMessage('Removed from playlist.')
+        return
+    }
+
+    const track = event.target.closest('[data-playlist-track]')
+    if (track) {
+        state.playbackPlaylist = state.selectedPlaylist
+        playTrack(track.dataset.playlistTrack)
+    }
+})
+$('#player-add-playlist').addEventListener('click', (event) =>
+    openPlaylistPicker(state.currentID, event.currentTarget)
+)
+$('#playlist-picker-close').addEventListener('click', closePlaylistPicker)
+$('#playlist-picker-search').addEventListener('input', (event) => {
+    state.playlistPickerQuery = event.currentTarget.value
+    renderPlaylistPicker()
+})
+$('#playlist-picker-list').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-picker-playlist]')
+    if (button) await addTrackToPlaylist(button.dataset.pickerPlaylist)
+})
+$('#playlist-picker-create').addEventListener(
+    'click',
+    createPlaylistAndAddTrack
+)
 
 $('#lyrics-edit').addEventListener('click', () => setLyricsEditor(true))
 $('#lyrics-cancel').addEventListener('click', () => {
@@ -1744,6 +1953,10 @@ $('#confirm-delete').addEventListener('click', async () => {
     try {
         await api(`/music/${type}s/${id}`, { method: 'DELETE' })
         if (type === 'track' && id === state.currentID) clearPlayer()
+        if (type === 'playlist') {
+            if (state.selectedPlaylist === id) state.selectedPlaylist = ''
+            if (state.playbackPlaylist === id) state.playbackPlaylist = ''
+        }
         $('#confirm-dialog').close()
         state.pendingDelete = null
         await load()
@@ -1763,12 +1976,12 @@ $('#play-toggle').addEventListener('click', () => {
 $('#prev').addEventListener('click', () => {
     if (audio.currentTime > 3) audio.currentTime = 0
     else {
-        const id = adjacentTrackID(state.tracks, state.currentID, -1)
+        const id = nextTrackID(-1)
         if (id) playTrack(id)
     }
 })
 $('#next').addEventListener('click', () => {
-    const id = adjacentTrackID(state.tracks, state.currentID, 1)
+    const id = nextTrackID(1)
     if (id) playTrack(id)
 })
 $('#volume-toggle').addEventListener('click', () => {
@@ -1817,7 +2030,7 @@ audio.addEventListener('pause', () => {
     persistPlayback(true)
 })
 audio.addEventListener('ended', () => {
-    const id = adjacentTrackID(state.tracks, state.currentID, 1)
+    const id = nextTrackID(1, true)
     if (id) playTrack(id)
     else setPlaybackIcon(false)
 })
@@ -1853,6 +2066,7 @@ audio.addEventListener('volumechange', () => {
 window.addEventListener('beforeunload', () => persistPlayback(true))
 
 updateVolumeUI()
+updatePlaybackModeUI()
 renderRoute()
 load().catch((error) => {
     $('#track-list').innerHTML = emptyState(
@@ -1860,6 +2074,10 @@ load().catch((error) => {
         'The music service could not be reached. Try again shortly.'
     )
     $('#manage-list').innerHTML = emptyState(
+        'Library unavailable',
+        'The music service could not be reached. Try again shortly.'
+    )
+    $('#playlist-track-list').innerHTML = emptyState(
         'Library unavailable',
         'The music service could not be reached. Try again shortly.'
     )
