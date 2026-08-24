@@ -5,6 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"mime/multipart"
 )
@@ -27,6 +31,27 @@ func readRasterImage(reader io.Reader, contentLength int64) ([]byte, string, str
 	}
 
 	return data, contentType, extension, nil
+}
+
+func rasterImageType(data []byte) (string, string, bool) {
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > 25_000_000 {
+		return "", "", false
+	}
+	if _, decodedFormat, err := image.Decode(bytes.NewReader(data)); err != nil || decodedFormat != format {
+		return "", "", false
+	}
+
+	switch format {
+	case "jpeg":
+		return "image/jpeg", ".jpg", true
+	case "png":
+		return "image/png", ".png", true
+	case "gif":
+		return "image/gif", ".gif", true
+	default:
+		return "", "", false
+	}
 }
 
 func (s *Service) UploadArtistAvatar(
