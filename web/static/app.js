@@ -3,14 +3,13 @@ import {
     centeredScrollTop,
     parseEnhancedLRC,
     scriptLang,
-} from './lyrics.mjs?v=4'
+} from './lyrics.mjs?v=15'
 import {
     adjacentTrackID,
-    lyricsLayout,
     viewForPath,
-} from './navigation.mjs?v=4'
-import { clampTime, parsePlaybackState, resumeTime } from './playback.mjs?v=4'
-import { trackArtworkURL } from './artwork.mjs?v=4'
+} from './navigation.mjs?v=15'
+import { clampTime, parsePlaybackState, resumeTime } from './playback.mjs?v=15'
+import { trackArtworkURL } from './artwork.mjs?v=15'
 import { api } from './helper/api.js'
 import { escapeHTML } from './helper/template.js'
 
@@ -29,6 +28,7 @@ const state = {
     manageTab: 'artists',
     manageQuery: '',
     lyricsPanelOpen: false,
+    overlayTab: 'main',
     shuffle: false,
     loop: false,
     playlistPickerTrack: '',
@@ -427,38 +427,48 @@ const renderPlaylistsPage = () => {
         )
 }
 
+const renderOverlay = () => {
+    const open = state.lyricsPanelOpen
+    $('#player-overlay').classList.toggle('hidden', !open)
+    $('#player-overlay').classList.toggle('flex', open)
+    $('#now-playing-view').classList.toggle('hidden', state.overlayTab !== 'main')
+    $('#now-playing-view').classList.toggle('flex', state.overlayTab === 'main')
+    $('#lyrics-panel').classList.toggle('hidden', state.overlayTab !== 'lyrics')
+    $('#lyrics-panel').classList.toggle('flex', state.overlayTab === 'lyrics')
+    const chromeHidden = open && mobileLayout.matches
+    $('#player-bar').classList.toggle('hidden', chromeHidden)
+    $('#mobile-header').classList.toggle('hidden', chromeHidden)
+    $('#nav-indicator')
+        .closest('nav')
+        .classList.toggle('hidden', open && mobileLayout.matches)
+    $('#lyrics-toggle').setAttribute('aria-expanded', String(open))
+    $('#lyrics-toggle').setAttribute(
+        'aria-label',
+        open ? 'Hide lyrics' : 'Show lyrics'
+    )
+    $('#lyrics-toggle').classList.toggle('text-amber-300', open)
+    document.querySelectorAll('[data-tab-switch]').forEach((link) => {
+        const active = link.dataset.tabSwitch === state.overlayTab
+        link.classList.toggle('bg-white/10', active)
+        link.classList.toggle('text-white', active)
+        link.classList.toggle('text-stone-400', !active)
+        if (active) link.setAttribute('aria-current', 'page')
+        else link.removeAttribute('aria-current')
+    })
+}
+
 const renderRoute = () => {
     state.view = viewForPath(location.pathname)
-    const layout = lyricsLayout(
-        state.view,
-        state.lyricsPanelOpen,
-        mobileLayout.matches
-    )
-    $('#player-layout').classList.toggle('hidden', state.view !== 'player')
-    $('#player-layout').classList.toggle('flex', state.view === 'player')
-    $('#player-layout').classList.toggle(
-        'lyrics-open',
-        layout.panel && !mobileLayout.matches
-    )
-    $('#player-layout').classList.toggle('max-w-[90rem]', !layout.panel)
-    $('#player-view').classList.toggle('hidden', !layout.library)
-    $('#now-playing-view').classList.toggle('hidden', !layout.nowPlaying)
-    $('#now-playing-view').classList.toggle('flex', layout.nowPlaying)
-    $('#lyrics-panel').classList.toggle('hidden', !layout.panel)
-    $('#lyrics-panel').classList.toggle('flex', layout.panel)
+    const isPlayer = state.view === 'player'
+    $('#player-layout').classList.toggle('hidden', !isPlayer)
     $('#manage-view').classList.toggle('hidden', state.view !== 'manage')
     $('#playlists-view').classList.toggle('hidden', state.view !== 'playlists')
     $('#player-search-wrap').classList.toggle(
         'hidden',
-        state.view !== 'player' || (layout.panel && mobileLayout.matches)
+        state.view !== 'player' || state.lyricsPanelOpen
     )
-    $('#lyrics-toggle').setAttribute('aria-expanded', String(layout.panel))
-    $('#lyrics-toggle').setAttribute(
-        'aria-label',
-        layout.panel ? 'Hide lyrics' : 'Show lyrics'
-    )
-    $('#lyrics-toggle').classList.toggle('text-amber-300', layout.panel)
     document.querySelectorAll('[data-route]').forEach((link) => {
+        if (link.dataset.nav === 'bottom') return
         const active = link.dataset.route === state.view
         if (!link.classList.contains('bg-amber-300')) {
             link.classList.toggle('bg-white/10', active)
@@ -467,6 +477,24 @@ const renderRoute = () => {
         }
         if (active) link.setAttribute('aria-current', 'page')
         else link.removeAttribute('aria-current')
+    })
+    const navIndex =
+        state.view === 'player' ? 0 : state.view === 'playlists' ? 1 : 2
+    const indicator = $('#nav-indicator')
+    const prevIndex = Number(indicator.dataset.index || '0')
+    indicator.style.setProperty(
+        '--nav-overshoot',
+        navIndex >= prevIndex ? '6px' : '-6px'
+    )
+    indicator.style.left = `${((navIndex + 0.5) / 3) * 100}%`
+    indicator.dataset.index = navIndex
+    indicator.classList.remove('bounce')
+    void indicator.offsetWidth
+    indicator.classList.add('bounce')
+    document.querySelectorAll('[data-nav="bottom"]').forEach((link) => {
+        const active = link.dataset.route === state.view
+        link.classList.toggle('text-amber-300', active)
+        link.classList.toggle('text-stone-500', !active)
     })
     if (state.view === 'manage') renderManage()
     else if (state.view === 'playlists') renderPlaylistsPage()
@@ -512,7 +540,6 @@ const load = async () => {
             `${currentTrack().artist_name}${currentTrack().album_title ? ` · ${currentTrack().album_title}` : ''}`
         setPlayerArtwork(currentTrack())
     }
-    if (state.lyricsPanelOpen) loadPanelLyrics(currentTrack())
     renderNowPlaying(currentTrack())
     render()
     if ($('#track-dialog').open) updateTrackCoverControls()
@@ -538,9 +565,14 @@ const renderNowPlaying = (track) => {
 }
 
 const setPlaybackIcon = (playing) => {
-    $('#play-icon').classList.toggle('hidden', playing)
-    $('#pause-icon').classList.toggle('hidden', !playing)
-    $('#play-toggle').setAttribute('aria-label', playing ? 'Pause' : 'Play')
+    ;[
+        ['play-icon', 'pause-icon', 'play-toggle'],
+        ['np-play-icon', 'np-pause-icon', 'np-play-toggle'],
+    ].forEach(([play, pause, toggle]) => {
+        $(`#${play}`).classList.toggle('hidden', playing)
+        $(`#${pause}`).classList.toggle('hidden', !playing)
+        $(`#${toggle}`).setAttribute('aria-label', playing ? 'Pause' : 'Play')
+    })
 }
 
 const clearPlayer = () => {
@@ -628,14 +660,16 @@ const playPlaylist = (id) => {
 
 const updatePlaybackModeUI = () => {
     ;[
-        ['#shuffle-toggle', state.shuffle, 'Shuffle'],
-        ['#loop-toggle', state.loop, 'Loop'],
-    ].forEach(([selector, active, label]) => {
-        const button = $(selector)
-        button.setAttribute('aria-pressed', String(active))
-        button.setAttribute('aria-label', `${label} ${active ? 'on' : 'off'}`)
-        button.classList.toggle('text-amber-300', active)
-        button.classList.toggle('text-stone-500', !active)
+        ['#shuffle-toggle', '#np-shuffle-toggle', state.shuffle, 'Shuffle'],
+        ['#loop-toggle', '#np-loop-toggle', state.loop, 'Loop'],
+    ].forEach(([a, b, active, label]) => {
+        ;[a, b].forEach((selector) => {
+            const button = $(selector)
+            button.setAttribute('aria-pressed', String(active))
+            button.setAttribute('aria-label', `${label} ${active ? 'on' : 'off'}`)
+            button.classList.toggle('text-amber-300', active)
+            button.classList.toggle('text-stone-500', !active)
+        })
     })
 }
 
@@ -796,18 +830,27 @@ const openLyricsEditor = (track) => {
     syncLyrics()
 }
 
-const setLyricsPanel = (open) => {
-    state.lyricsPanelOpen = open
-    renderRoute()
-    if (open) {
-        loadPanelLyrics(currentTrack())
-        ;(mobileLayout.matches
-            ? $('#lyrics-back')
-            : $('#lyrics-panel-close')
-        ).focus()
-    } else {
-        $('#lyrics-toggle').focus()
-    }
+const openOverlay = (tab = state.overlayTab) => {
+    state.lyricsPanelOpen = true
+    state.overlayTab = tab
+    if (tab === 'lyrics') loadPanelLyrics(currentTrack())
+    const overlay = $('#player-overlay')
+    overlay.classList.remove('slide-in')
+    void overlay.offsetWidth
+    overlay.classList.add('slide-in')
+    renderOverlay()
+    $('#lyrics-toggle').focus()
+}
+
+const closeOverlay = () => {
+    state.lyricsPanelOpen = false
+    renderOverlay()
+}
+
+const setOverlayTab = (tab) => {
+    state.overlayTab = tab
+    if (tab === 'lyrics') loadPanelLyrics(currentTrack())
+    renderOverlay()
 }
 
 const seekTo = (seconds, save = true) => {
@@ -1515,22 +1558,29 @@ $('#search').addEventListener('input', (event) => {
     state.query = event.currentTarget.value.trim().toLowerCase()
     renderTracks()
 })
-$('#hero-play').addEventListener('click', playFirstVisible)
-$('#shuffle-toggle').addEventListener('click', () => {
+const toggleShuffle = () => {
     state.shuffle = !state.shuffle
     updatePlaybackModeUI()
-})
-$('#loop-toggle').addEventListener('click', () => {
+}
+const toggleLoop = () => {
     state.loop = !state.loop
     updatePlaybackModeUI()
-})
+}
+;[['#shuffle-toggle', toggleShuffle], ['#np-shuffle-toggle', toggleShuffle]].forEach(
+    ([sel, fn]) => $(sel).addEventListener('click', fn)
+)
+;[['#loop-toggle', toggleLoop], ['#np-loop-toggle', toggleLoop]].forEach(([sel, fn]) =>
+    $(sel).addEventListener('click', fn)
+)
+$('#hero-play').addEventListener('click', playFirstVisible)
 $('#lyrics-toggle').addEventListener('click', () => {
-    const open = state.view !== 'player' || !state.lyricsPanelOpen
-    if (state.view !== 'player') history.pushState({}, '', '/')
-    setLyricsPanel(open)
+    if (state.lyricsPanelOpen) closeOverlay()
+    else openOverlay('lyrics')
 })
-$('#lyrics-back').addEventListener('click', () => setLyricsPanel(false))
-$('#lyrics-panel-close').addEventListener('click', () => setLyricsPanel(false))
+$('#lyrics-panel-close').addEventListener('click', closeOverlay)
+document.querySelectorAll('[data-tab-switch]').forEach((link) =>
+    link.addEventListener('click', () => setOverlayTab(link.dataset.tabSwitch))
+)
 $('#lyrics-panel-display').addEventListener('click', (event) => {
     const lyric = event.target.closest('[data-time]')
     if (lyric) seekTo(Number(lyric.dataset.time))
@@ -1967,23 +2017,32 @@ $('#confirm-delete').addEventListener('click', async () => {
     }
 })
 
-$('#play-toggle').addEventListener('click', () => {
+const togglePlayback = () => {
     if (!audio.src) playFirstVisible()
     else if (audio.paused)
         audio.play().catch(() => showMessage('Playback could not start.'))
     else audio.pause()
-})
-$('#prev').addEventListener('click', () => {
+}
+const playPrev = () => {
     if (audio.currentTime > 3) audio.currentTime = 0
     else {
         const id = nextTrackID(-1)
         if (id) playTrack(id)
     }
-})
-$('#next').addEventListener('click', () => {
+}
+const playNext = () => {
     const id = nextTrackID(1)
     if (id) playTrack(id)
-})
+}
+;[['#play-toggle', togglePlayback], ['#np-play-toggle', togglePlayback]].forEach(
+    ([sel, fn]) => $(sel).addEventListener('click', fn)
+)
+;[['#prev', playPrev], ['#np-prev', playPrev]].forEach(([sel, fn]) =>
+    $(sel).addEventListener('click', fn)
+)
+;[['#next', playNext], ['#np-next', playNext]].forEach(([sel, fn]) =>
+    $(sel).addEventListener('click', fn)
+)
 $('#volume-toggle').addEventListener('click', () => {
     if (audio.muted || audio.volume === 0) {
         if (audio.volume === 0) audio.volume = lastAudibleVolume

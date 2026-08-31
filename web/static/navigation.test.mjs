@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { adjacentTrackID, lyricsLayout, viewForPath } from "./navigation.mjs";
+import { adjacentTrackID, viewForPath } from "./navigation.mjs";
 
 test("maps only the manage path to the manage view", () => {
   assert.equal(viewForPath("/"), "player");
@@ -18,9 +18,3 @@ test("derives adjacent tracks from the current ID after reordering", () => {
   assert.equal(adjacentTrackID(tracks, "missing", 1), "");
 });
 
-test("lyrics replace the mobile library but sit beside the desktop library", () => {
-  assert.deepEqual(lyricsLayout("player", false, true), { library: true, nowPlaying: false, panel: false });
-  assert.deepEqual(lyricsLayout("player", true, true), { library: false, nowPlaying: false, panel: true });
-  assert.deepEqual(lyricsLayout("player", true, false), { library: false, nowPlaying: true, panel: true });
-  assert.deepEqual(lyricsLayout("manage", true, false), { library: false, nowPlaying: false, panel: false });
-});

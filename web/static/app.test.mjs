@@ -5,10 +5,12 @@ import { readFileSync } from "node:fs";
 const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
 
 test("playback controls are wired to shuffle and repeat state", () => {
-  assert.ok(app.includes("$('#shuffle-toggle').addEventListener('click'"));
+  assert.ok(app.includes("const toggleShuffle = () =>"));
   assert.ok(app.includes("state.shuffle = !state.shuffle"));
-  assert.ok(app.includes("$('#loop-toggle').addEventListener('click'"));
+  assert.ok(app.includes("const toggleLoop = () =>"));
   assert.ok(app.includes("state.loop = !state.loop"));
+  assert.ok(app.includes("'#np-shuffle-toggle'"));
+  assert.ok(app.includes("'#np-loop-toggle'"));
 });
 
 test("playback advance uses playlist-aware mode logic", () => {
