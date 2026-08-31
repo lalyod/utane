@@ -13,6 +13,14 @@ import { trackArtworkURL } from './artwork.mjs?v=15'
 import { api } from './helper/api.js'
 import { escapeHTML } from './helper/template.js'
 
+const savedUi = (() => {
+    try {
+        return JSON.parse(localStorage.getItem('utane.ui'))
+    } catch {
+        return null
+    }
+})()
+
 const state = {
     artists: [],
     albums: [],
@@ -27,8 +35,8 @@ const state = {
     view: viewForPath(location.pathname),
     manageTab: 'artists',
     manageQuery: '',
-    lyricsPanelOpen: false,
-    overlayTab: 'main',
+    lyricsPanelOpen: savedUi?.open === true,
+    overlayTab: savedUi?.tab === 'lyrics' ? 'lyrics' : 'main',
     shuffle: false,
     loop: false,
     playlistPickerTrack: '',
@@ -50,6 +58,7 @@ const savedPlayback = (() => {
         return null
     }
 })()
+const uiKey = 'utane.ui'
 const mobileLayout = matchMedia('(max-width: 1023px)')
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
 let messageTimer
@@ -118,6 +127,15 @@ const clearPersistedPlayback = () => {
     lastSavedSecond = -1
     try {
         localStorage.removeItem(playbackKey)
+    } catch {}
+}
+
+const persistUi = () => {
+    try {
+        localStorage.setItem(uiKey, JSON.stringify({
+            open: state.lyricsPanelOpen,
+            tab: state.overlayTab,
+        }))
     } catch {}
 }
 
@@ -431,10 +449,11 @@ const renderOverlay = () => {
     const open = state.lyricsPanelOpen
     $('#player-overlay').classList.toggle('hidden', !open)
     $('#player-overlay').classList.toggle('flex', open)
-    $('#now-playing-view').classList.toggle('hidden', state.overlayTab !== 'main')
-    $('#now-playing-view').classList.toggle('flex', state.overlayTab === 'main')
-    $('#lyrics-panel').classList.toggle('hidden', state.overlayTab !== 'lyrics')
-    $('#lyrics-panel').classList.toggle('flex', state.overlayTab === 'lyrics')
+    const lyrics = state.overlayTab === 'lyrics'
+    $('#now-playing-view').classList.toggle('hidden', lyrics)
+    $('#now-playing-view').classList.toggle('flex', !lyrics)
+    $('#lyrics-panel').classList.toggle('hidden', !lyrics)
+    $('#lyrics-panel').classList.toggle('flex', lyrics)
     const chromeHidden = open && mobileLayout.matches
     $('#player-bar').classList.toggle('hidden', chromeHidden)
     $('#mobile-header').classList.toggle('hidden', chromeHidden)
@@ -539,6 +558,7 @@ const load = async () => {
         $('#player-meta').textContent =
             `${currentTrack().artist_name}${currentTrack().album_title ? ` · ${currentTrack().album_title}` : ''}`
         setPlayerArtwork(currentTrack())
+        syncMediaSession(currentTrack())
     }
     renderNowPlaying(currentTrack())
     render()
@@ -552,6 +572,25 @@ const setPlayerArtwork = (track) => {
         : recordIcon
 }
 
+const syncMediaSession = (track) => {
+    if (!('mediaSession' in navigator)) return
+    if (!track) {
+        document.title = 'Utane'
+        navigator.mediaSession.metadata = null
+        return
+    }
+    document.title = `${track.title} — ${track.artist_name}`
+    const src = artworkURL(track)
+    navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title,
+        artist: track.artist_name,
+        album: track.album_title || '',
+        artwork: src
+            ? [{ src, sizes: '512x512', type: 'image/jpeg' }]
+            : [],
+    })
+}
+
 const renderNowPlaying = (track) => {
     $('#now-playing-title').textContent = track?.title || 'Nothing playing'
     $('#now-playing-meta').textContent = track
@@ -559,7 +598,7 @@ const renderNowPlaying = (track) => {
         : 'Choose a track'
     $('#now-playing-art').innerHTML =
         track && artworkURL(track)
-            ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">`
+            ? `<img draggable="false" src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">`
             : recordIcon
     $('#player-add-playlist').disabled = !track
 }
@@ -585,12 +624,14 @@ const clearPlayer = () => {
     $('#player-title').textContent = 'Nothing playing'
     $('#player-meta').textContent = 'Choose a track'
     $('#player-art').innerHTML = recordIcon
-    $('#seek').value = 0
+    setSeekValue(0)
     $('#seek').max = 0
-    $('#current-time').textContent = '0:00'
-    $('#total-time').textContent = '0:00'
+    if ($('#np-seek')) $('#np-seek').max = 0
+    setCurrentTime('0:00')
+    setTotalTime('0:00')
     setPlaybackIcon(false)
     renderNowPlaying()
+    syncMediaSession(null)
     if (state.lyricsPanelOpen) loadPanelLyrics()
 }
 
@@ -603,6 +644,7 @@ const playTrack = (id) => {
         `${track.artist_name}${track.album_title ? ` · ${track.album_title}` : ''}`
     setPlayerArtwork(track)
     renderNowPlaying(track)
+    syncMediaSession(track)
     audio.src = `/music/tracks/${track.id}/audio`
     pendingResumeTime = null
     lastSavedSecond = -1
@@ -839,25 +881,41 @@ const openOverlay = (tab = state.overlayTab) => {
     void overlay.offsetWidth
     overlay.classList.add('slide-in')
     renderOverlay()
+    persistUi()
     $('#lyrics-toggle').focus()
 }
 
 const closeOverlay = () => {
     state.lyricsPanelOpen = false
     renderOverlay()
+    persistUi()
 }
 
 const setOverlayTab = (tab) => {
     state.overlayTab = tab
     if (tab === 'lyrics') loadPanelLyrics(currentTrack())
     renderOverlay()
+    persistUi()
+}
+
+const setSeekValue = (value) => {
+    $('#seek').value = value
+    $('#np-seek')?.setAttribute('value', value)
+}
+const setCurrentTime = (text) => {
+    $('#current-time').textContent = text
+    if ($('#np-current-time')) $('#np-current-time').textContent = text
+}
+const setTotalTime = (text) => {
+    $('#total-time').textContent = text
+    if ($('#np-total-time')) $('#np-total-time').textContent = text
 }
 
 const seekTo = (seconds, save = true) => {
     if (!state.currentID || !Number.isFinite(seconds)) return
     const target = clampTime(seconds, audio.duration)
-    $('#seek').value = target
-    $('#current-time').textContent = formatTime(target)
+    setSeekValue(target)
+    setCurrentTime(formatTime(target))
     if (!Number.isFinite(audio.duration)) {
         pendingResumeTime = target
         return
@@ -2037,6 +2095,11 @@ const playNext = () => {
 ;[['#play-toggle', togglePlayback], ['#np-play-toggle', togglePlayback]].forEach(
     ([sel, fn]) => $(sel).addEventListener('click', fn)
 )
+;[['#player-title', '#player-art']].forEach(([sel]) => {
+    const el = $(sel)
+    el.addEventListener('click', () => openOverlay('main'))
+    el.classList.add('cursor-pointer')
+})
 ;[['#prev', playPrev], ['#np-prev', playPrev]].forEach(([sel, fn]) =>
     $(sel).addEventListener('click', fn)
 )
@@ -2058,35 +2121,42 @@ $('#volume').addEventListener('input', (event) => {
     if (volume > 0) lastAudibleVolume = volume
 })
 
-const seek = $('#seek')
-seek.addEventListener('pointerdown', () => {
-    state.seeking = true
-})
-seek.addEventListener('input', (event) => {
-    state.seeking = true
-    seekTo(event.currentTarget.valueAsNumber, false)
-})
-seek.addEventListener('change', (event) => {
-    seekTo(event.currentTarget.valueAsNumber)
-    state.seeking = false
-})
-seek.addEventListener('pointerup', () => {
-    seekTo(seek.valueAsNumber)
-    state.seeking = false
-})
-seek.addEventListener('pointercancel', () => {
-    state.seeking = false
-    seek.value = audio.currentTime
-    $('#current-time').textContent = formatTime(audio.currentTime)
-})
-seek.addEventListener('blur', () => {
-    state.seeking = false
-})
+const wireSeek = (input) => {
+    input.addEventListener('pointerdown', () => {
+        state.seeking = true
+    })
+    input.addEventListener('input', (event) => {
+        state.seeking = true
+        seekTo(event.currentTarget.valueAsNumber, false)
+    })
+    input.addEventListener('change', (event) => {
+        seekTo(event.currentTarget.valueAsNumber)
+        state.seeking = false
+    })
+    input.addEventListener('pointerup', () => {
+        seekTo(input.valueAsNumber)
+        state.seeking = false
+    })
+    input.addEventListener('pointercancel', () => {
+        state.seeking = false
+        setSeekValue(audio.currentTime)
+        setCurrentTime(formatTime(audio.currentTime))
+    })
+    input.addEventListener('blur', () => {
+        state.seeking = false
+    })
+}
+wireSeek($('#seek'))
+if ($('#np-seek')) wireSeek($('#np-seek'))
 
-audio.addEventListener('play', () => setPlaybackIcon(true))
+audio.addEventListener('play', () => {
+    setPlaybackIcon(true)
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'
+})
 audio.addEventListener('pause', () => {
     setPlaybackIcon(false)
     persistPlayback(true)
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'
 })
 audio.addEventListener('ended', () => {
     const id = nextTrackID(1, true)
@@ -2098,21 +2168,22 @@ audio.addEventListener('error', () =>
 )
 audio.addEventListener('loadedmetadata', () => {
     $('#seek').max = audio.duration || 0
-    $('#total-time').textContent = formatTime(audio.duration)
+    if ($('#np-seek')) $('#np-seek').max = audio.duration || 0
+    setTotalTime(formatTime(audio.duration))
     if (pendingResumeTime !== null) {
         const target = resumeTime(pendingResumeTime, audio.duration)
         pendingResumeTime = null
         audio.currentTime = target
-        $('#seek').value = target
-        $('#current-time').textContent = formatTime(target)
+        setSeekValue(target)
+        setCurrentTime(formatTime(target))
         persistPlayback(true)
         syncLyrics()
     }
 })
 audio.addEventListener('timeupdate', () => {
     if (!state.seeking) {
-        $('#seek').value = audio.currentTime
-        $('#current-time').textContent = formatTime(audio.currentTime)
+        setSeekValue(audio.currentTime)
+        setCurrentTime(formatTime(audio.currentTime))
     }
     syncLyrics()
     persistPlayback()
@@ -2124,9 +2195,58 @@ audio.addEventListener('volumechange', () => {
 })
 window.addEventListener('beforeunload', () => persistPlayback(true))
 
+if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('play', () => audio.play())
+    navigator.mediaSession.setActionHandler('pause', () => audio.pause())
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+        const id = nextTrackID(-1)
+        if (id) playTrack(id)
+    })
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+        const id = nextTrackID(1)
+        if (id) playTrack(id)
+    })
+}
+
+let swipeStart = null
+const overlayEl = $('#player-overlay')
+overlayEl.addEventListener('pointerdown', (event) => {
+    swipeStart = { x: event.clientX, y: event.clientY, active: true }
+    overlayEl.setPointerCapture?.(event.pointerId)
+})
+overlayEl.addEventListener('pointermove', (event) => {
+    if (!swipeStart?.active) return
+    const dx = event.clientX - swipeStart.x
+    const dy = event.clientY - swipeStart.y
+    if (Math.abs(dx) < 44 || Math.abs(dx) < Math.abs(dy) * 1.2) return
+    swipeStart.active = false
+    overlayEl.releasePointerCapture?.(event.pointerId)
+    const lyrics = state.overlayTab === 'lyrics'
+    if (dx < 0 && !lyrics) setOverlayTab('lyrics')
+    else if (dx > 0 && lyrics) setOverlayTab('main')
+})
+overlayEl.addEventListener('pointerup', () => {
+    swipeStart = null
+})
+overlayEl.addEventListener('pointercancel', () => {
+    swipeStart = null
+})
+overlayEl.addEventListener(
+    'touchmove',
+    (event) => {
+        if (!swipeStart?.active) return
+        const dx = event.touches[0].clientX - swipeStart.x
+        const dy = event.touches[0].clientY - swipeStart.y
+        if (Math.abs(dx) < Math.abs(dy)) return
+        event.preventDefault()
+    },
+    { passive: false }
+)
+
 updateVolumeUI()
 updatePlaybackModeUI()
 renderRoute()
+renderOverlay()
 load().catch((error) => {
     $('#track-list').innerHTML = emptyState(
         'Library unavailable',

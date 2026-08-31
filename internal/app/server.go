@@ -77,6 +77,13 @@ func Serve() error {
 		http.ServeFile(w, r, filepath.Join("web", "index.html"))
 	})
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	r.Get("/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join("web", "manifest.json"))
+	})
+	r.Get("/sw.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Service-Worker-Allowed", "/")
+		http.ServeFile(w, r, filepath.Join("web", "sw.js"))
+	})
 	r.Mount("/music", handler.Routes())
 
 	log.Println("Server running on :8080")
