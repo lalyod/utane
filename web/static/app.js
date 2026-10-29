@@ -11,6 +11,8 @@ import {
 import { clampTime, parsePlaybackState, resumeTime } from './playback.mjs?v=15'
 import { trackArtworkURL } from './artwork.mjs?v=15'
 import { api } from './helper/api.js'
+import { initSync } from './sync.js?v=1'
+import { ListenTimer, greeting } from './home.mjs?v=1'
 import { escapeHTML } from './helper/template.js'
 
 const savedUi = (() => {
@@ -31,15 +33,18 @@ const state = {
     selectedAlbum: '',
     selectedPlaylist: '',
     playbackPlaylist: '',
+    queueIDs: [],
+    home: null,
+    browse: false,
+    detail: null, // {title, ids}: a home card opened as a track list
     query: '',
     view: viewForPath(location.pathname),
     manageTab: 'artists',
     manageQuery: '',
     lyricsPanelOpen: savedUi?.open === true,
-    overlayTab: savedUi?.tab === 'lyrics' ? 'lyrics' : 'main',
     shuffle: false,
     loop: false,
-    playlistPickerTrack: '',
+    playlistPickerIDs: [],
     playlistPickerQuery: '',
     panelLyrics: { trackID: '', lines: [], activeLyric: -1, activeWord: -1 },
     editorLyrics: { trackID: '', lines: [], activeLyric: -1, activeWord: -1 },
@@ -77,6 +82,19 @@ let loadOperation = 0
 let pendingResumeTime = null
 let lastSavedSecond = -1
 let lastAudibleVolume = savedPlayback?.volume > 0 ? savedPlayback.volume : 1
+const listenTimer = new ListenTimer()
+
+// Listening time feeds the home page statistics; losing a checkpoint is harmless.
+const sendPlay = (play) => {
+    if (!play) return
+    fetch(`/music/plays/${play.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: play.track_id, seconds: play.seconds }),
+        keepalive: true,
+    }).catch(() => {})
+}
+const flushListen = () => sendPlay(listenTimer.checkpoint(true))
 
 const formatTime = (seconds) => {
     const total = Math.max(0, Math.round(seconds || 0))
@@ -134,7 +152,6 @@ const persistUi = () => {
     try {
         localStorage.setItem(uiKey, JSON.stringify({
             open: state.lyricsPanelOpen,
-            tab: state.overlayTab,
         }))
     } catch {}
 }
@@ -204,7 +221,10 @@ const restorePlayback = () => {
 }
 
 const filteredTracks = () =>
-    state.tracks.filter((track) => {
+    (state.detail
+        ? state.detail.ids.map(trackFor).filter(Boolean)
+        : state.tracks
+    ).filter((track) => {
         if (state.selectedAlbum && track.album_id !== state.selectedAlbum)
             return false
         return (
@@ -216,6 +236,7 @@ const filteredTracks = () =>
     })
 
 const activeTracks = () => {
+    if (state.queueIDs.length) return state.queueIDs.map(trackFor).filter(Boolean)
     const playlist = playlistFor(state.playbackPlaylist)
     if (!playlist) return filteredTracks()
     return playlist.track_ids.map(trackFor).filter(Boolean)
@@ -245,71 +266,303 @@ const fillAlbumSelect = () => {
         select.value = current
 }
 
-const renderHero = () => {
-    const album = albumFor(state.selectedAlbum)
-    const art = $('#hero-art')
-    if (!album) {
-        $('#hero-title').innerHTML = 'Everything,<br>in one place.'
-        $('#hero-meta').textContent =
-            `${state.tracks.length} track${state.tracks.length === 1 ? '' : 's'} across ${state.albums.length} album${state.albums.length === 1 ? '' : 's'}.`
-        art.innerHTML = recordIcon
-        return
-    }
-    $('#hero-title').textContent = album.title
-    $('#hero-meta').textContent =
-        `${album.artist_name}${album.year ? `, ${album.year}` : ''} · ${state.tracks.filter((track) => track.album_id === album.id).length} tracks`
-    art.innerHTML = coverURL(album.id)
-        ? `<img src="${coverURL(album.id)}" alt="" class="h-full w-full object-cover">`
+const isBrowsing = () =>
+    Boolean(state.browse || state.query || state.selectedAlbum || state.detail)
+
+// A sibling of the clipped artwork, so the round artist cards do not cut it off.
+const playBadge = `<span class="absolute bottom-2 right-2 grid h-10 w-10 translate-y-2 place-items-center rounded-full bg-amber-300 text-stone-950 opacity-0 shadow-lg transition group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:translate-y-0 group-focus-visible:opacity-100"><svg aria-hidden="true" class="ml-0.5 h-4 w-4 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>`
+
+// Up to four distinct covers as a 2x2 grid, one cover alone, or the record placeholder.
+const collageHTML = (trackIDs) => {
+    const urls = [
+        ...new Set(
+            trackIDs.map(trackFor).filter(Boolean).map(artworkURL).filter(Boolean)
+        ),
+    ]
+    if (urls.length >= 4)
+        return `<span class="grid h-full w-full grid-cols-2">${urls
+            .slice(0, 4)
+            .map(
+                (url) =>
+                    `<img src="${url}" alt="" class="h-full w-full object-cover">`
+            )
+            .join('')}</span>`
+    return urls.length
+        ? `<img src="${urls[0]}" alt="" class="h-full w-full object-cover">`
         : recordIcon
 }
 
-const renderAlbums = () => {
-    const list = $('#album-list')
-    if (!state.albums.length) {
-        list.innerHTML = `<div class="w-full rounded-2xl border border-dashed border-white/10">${emptyState('No albums yet', 'Albums in your library will appear here.', 'py-8')}</div>`
+const homeCard = ({ kind, id, art, title, subtitle, round = false, label = '' }) => `
+  <button type="button" data-home="${kind}" data-id="${escapeHTML(String(id))}" class="group w-36 shrink-0 snap-start text-left sm:w-44">
+    <span class="relative block aspect-square transition duration-300 group-hover:-translate-y-1">
+      <span class="absolute inset-0 overflow-hidden ${round ? 'rounded-full' : 'rounded-2xl'} border border-white/[0.07] bg-white/[0.04] shadow-lg shadow-black/20">
+        ${art}
+        ${label ? `<span class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8 text-[0.65rem] font-bold uppercase tracking-[0.18em] text-white">${escapeHTML(label)}</span>` : ''}
+      </span>
+      ${playBadge}
+    </span>
+    <span class="mt-3 block truncate text-sm font-semibold ${round ? 'text-center' : ''}">${escapeHTML(title)}</span>
+    <span class="mt-1 block truncate text-xs text-stone-500 ${round ? 'text-center' : ''}">${escapeHTML(subtitle)}</span>
+  </button>`
+
+const shelf = (title, cards, action = '') =>
+    cards
+        ? `<section class="mt-12 first:mt-0" aria-label="${escapeHTML(title)}">
+      <div class="mb-4 flex items-end justify-between"><h2 class="text-2xl font-semibold tracking-tight">${escapeHTML(title)}</h2>${action}</div>
+      <div class="-mx-5 flex snap-x scroll-pl-5 gap-4 -mt-2 overflow-x-auto px-5 pb-3 pt-2 [scrollbar-width:none] md:-mx-8 md:scroll-pl-8 md:px-8 lg:-mx-12 lg:scroll-pl-12 lg:px-12">${cards}</div>
+    </section>`
+        : ''
+
+const viewAll = (action) =>
+    `<button type="button" data-home="${action}" class="text-sm font-medium text-stone-500 transition hover:text-white">View all</button>`
+
+const artistList = (trackIDs, limit = 3) => {
+    const names = [
+        ...new Set(trackIDs.map(trackFor).filter(Boolean).map((t) => t.artist_name)),
+    ]
+    return names.length > limit
+        ? `${names.slice(0, limit).join(', ')} and more`
+        : names.join(', ')
+}
+
+const renderHome = () => {
+    const root = $('#home')
+    if (!state.tracks.length) {
+        root.innerHTML = `<h1 class="text-4xl font-semibold tracking-tight md:text-6xl">${greeting(new Date())}</h1>${emptyState('Your library is empty', 'Add an artist and upload tracks in Manage to fill this page.')}`
         return
     }
-    list.innerHTML = ''
-    state.albums.forEach((album) => {
-        const selected = state.selectedAlbum === album.id
-        const item = document.createElement('button')
-        item.type = 'button'
-        item.className = `group w-36 shrink-0 snap-start text-left sm:w-44 ${selected ? 'text-amber-300' : 'text-stone-100'}`
-        item.innerHTML = `
-      <span class="relative block aspect-square overflow-hidden rounded-2xl border ${selected ? 'border-amber-300/60' : 'border-white/[0.07]'} bg-white/[0.04] shadow-lg shadow-black/20 transition duration-300 group-hover:-translate-y-1">
-        ${album.has_cover ? `<img src="/music/albums/${album.id}/cover" alt="" class="h-full w-full object-cover">` : recordIcon}
-      </span>
-      <span class="mt-3 block truncate text-sm font-semibold">${escapeHTML(album.title)}</span>
-      <span class="mt-1 block truncate text-xs text-stone-500">${escapeHTML(album.artist_name)}${album.year ? ` · ${album.year}` : ''}</span>`
-        item.addEventListener('click', () => {
-            state.selectedAlbum = selected ? '' : album.id
-            renderLibrary()
-            $('#tracks-heading').scrollIntoView({
-                behavior: reducedMotion.matches ? 'auto' : 'smooth',
-                block: 'start',
+    const home = state.home || {}
+    const known = (ids) => (ids || []).filter(trackFor)
+    const mixes = (home.mixes || []).map((mix) => ({ ...mix, track_ids: known(mix.track_ids) })).filter((mix) => mix.track_ids.length)
+    const onRepeat = known(home.on_repeat)
+    const rediscover = known(home.rediscover)
+    const recent = known(home.recent)
+    const artists = (home.artists || []).filter((entry) => artistFor(entry.id))
+
+    const madeForYou = [
+        ...mixes.map((mix, index) =>
+            homeCard({
+                kind: 'mix',
+                id: index,
+                art: collageHTML(mix.track_ids),
+                label: `Daily Mix ${index + 1}`,
+                title: mix.name,
+                subtitle: artistList(mix.track_ids),
+            })
+        ),
+        onRepeat.length
+            ? homeCard({
+                  kind: 'repeat',
+                  id: 'repeat',
+                  art: collageHTML(onRepeat),
+                  label: 'On repeat',
+                  title: 'On Repeat',
+                  subtitle: 'What you keep coming back to',
+              })
+            : '',
+        rediscover.length
+            ? homeCard({
+                  kind: 'rediscover',
+                  id: 'rediscover',
+                  art: collageHTML(rediscover),
+                  label: 'Rediscover',
+                  title: 'Rediscover',
+                  subtitle: 'Loved once, not heard lately',
+              })
+            : '',
+    ].join('')
+
+    const jumpBack = recent
+        .map((id, index) => {
+            const track = trackFor(id)
+            return homeCard({
+                kind: 'recent',
+                id: index,
+                art: artworkURL(track)
+                    ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">`
+                    : recordIcon,
+                title: track.title,
+                subtitle: track.artist_name,
             })
         })
-        list.append(item)
-    })
+        .join('')
+
+    const favorites = artists
+        .map((entry) => {
+            const artist = artistFor(entry.id)
+            return homeCard({
+                kind: 'artist',
+                id: artist.id,
+                round: true,
+                art: artistAvatarHTML(artist, 'h-full w-full text-5xl'),
+                title: artist.name,
+                subtitle: entry.plays
+                    ? `${entry.plays} play${entry.plays === 1 ? '' : 's'} · ${entry.hours >= 1 ? `${entry.hours.toFixed(1)} h` : `${Math.max(1, Math.round(entry.hours * 60))} min`}`
+                    : `${entry.tracks} track${entry.tracks === 1 ? '' : 's'}`,
+            })
+        })
+        .join('')
+
+    const playlists = state.playlists
+        .map((playlist) =>
+            homeCard({
+                kind: 'playlist',
+                id: playlist.id,
+                art: collageHTML(playlist.track_ids),
+                title: playlist.name,
+                subtitle: `${playlist.track_ids.length} track${playlist.track_ids.length === 1 ? '' : 's'}`,
+            })
+        )
+        .join('')
+
+    const albums = state.albums
+        .map((album) =>
+            homeCard({
+                kind: 'album',
+                id: album.id,
+                art: album.has_cover
+                    ? `<img src="/music/albums/${album.id}/cover" alt="" class="h-full w-full object-cover">`
+                    : recordIcon,
+                title: album.title,
+                subtitle: `${album.artist_name}${album.year ? ` · ${album.year}` : ''}`,
+            })
+        )
+        .join('')
+
+    const personal = artists.some((entry) => entry.plays > 0)
+    root.innerHTML = `
+      <div class="mb-10 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 class="text-4xl font-semibold tracking-tight md:text-6xl">${greeting(new Date())}</h1>
+          <p class="mt-3 text-sm text-stone-500">${state.tracks.length} track${state.tracks.length === 1 ? '' : 's'} across ${state.albums.length} album${state.albums.length === 1 ? '' : 's'}.</p>
+        </div>
+        <button type="button" data-home="browse" class="rounded-full border border-white/10 px-5 py-2.5 text-sm font-semibold text-stone-300 transition hover:bg-white/[0.06]">Browse all tracks</button>
+      </div>
+      ${shelf('Made for you', madeForYou)}
+      ${shelf('Jump back in', jumpBack)}
+      ${shelf(personal ? 'Your favorite artists' : 'Artists', favorites)}
+      ${shelf('Your playlists', playlists, viewAll('playlists'))}
+      ${shelf('Albums', albums, viewAll('browse'))}`
+    wireAvatarFallbacks(root)
+}
+
+const playQueue = (ids) => {
+    const queue = ids.filter(trackFor)
+    if (!queue.length) {
+        showMessage('There are no tracks to play.')
+        return
+    }
+    state.queueIDs = queue
+    state.playbackPlaylist = ''
+    playTrack(queue[0])
+}
+
+const homeAction = (card) => {
+    const home = state.home || {}
+    const { home: kind, id } = card.dataset
+    const open = (title, ids, artistID = '') => {
+        state.detail = { title, ids, artistID }
+        renderLibrary()
+        scrollTo({ top: 0 })
+    }
+    if (kind === 'mix') {
+        const mix = home.mixes?.[Number(id)]
+        open(mix?.name || 'Mix', mix?.track_ids || [])
+    } else if (kind === 'repeat') open('On Repeat', home.on_repeat || [])
+    else if (kind === 'rediscover') open('Rediscover', home.rediscover || [])
+    else if (kind === 'recent') playQueue((home.recent || []).slice(Number(id)))
+    else if (kind === 'artist')
+        open(
+            artistFor(id)?.name || 'Artist',
+            state.tracks.filter((t) => t.artist_id === id).map((t) => t.id),
+            id
+        )
+    else if (kind === 'playlist')
+        open(playlistFor(id)?.name || 'Playlist', playlistFor(id)?.track_ids || [])
+    else if (kind === 'album') {
+        state.selectedAlbum = id
+        renderLibrary()
+        scrollTo({ top: 0 })
+    } else if (kind === 'browse') {
+        state.browse = true
+        renderLibrary()
+    } else if (kind === 'playlists') {
+        history.pushState({}, '', '/playlists')
+        renderRoute()
+    }
+}
+
+// The home shelves come from the server's listening statistics; a failure just leaves the
+// previous (or cold-start) layout in place.
+const refreshHome = async () => {
+    try {
+        state.home = await api('/music/home')
+    } catch {
+        return
+    }
+    if (state.view === 'player' && !isBrowsing()) renderHome()
+}
+
+const showHome = () => {
+    state.browse = false
+    state.detail = null
+    state.selectedAlbum = ''
+    state.query = ''
+    $('#search').value = ''
+    refreshHome()
 }
 
 const renderTracks = () => {
     const tracks = filteredTracks()
     const selected = albumFor(state.selectedAlbum)
+    const { detail } = state
     $('#tracks-heading').textContent = selected
         ? selected.title
-        : state.query
-          ? 'Search results'
-          : 'All tracks'
-    $('#track-count').textContent =
-        `${tracks.length} track${tracks.length === 1 ? '' : 's'}`
+        : detail
+          ? detail.title
+          : state.query
+            ? 'Search results'
+            : 'All tracks'
+    // Spotify-style header: the artist's avatar, the album cover, else the top track's cover.
+    const topArt = tracks.map(artworkURL).find(Boolean)
+    const detailArtist = artistFor(detail?.artistID)
+    $('#browse-cover').classList.toggle('rounded-full', Boolean(detailArtist))
+    $('#browse-cover').classList.toggle('rounded-2xl', !detailArtist)
+    $('#browse-cover').innerHTML = detailArtist
+        ? artistAvatarHTML(detailArtist, 'h-full w-full text-7xl')
+        : selected?.has_cover || topArt
+          ? `<img src="${selected?.has_cover ? coverURL(selected.id) : topArt}" alt="" class="h-full w-full object-cover">`
+          : recordIcon
+    wireAvatarFallbacks($('#browse-cover'))
+    const minutes = Math.round(
+        tracks.reduce((sum, track) => sum + (track.duration || 0), 0) / 60
+    )
+    const length =
+        minutes >= 60
+            ? `${Math.floor(minutes / 60)} hr ${minutes % 60} min`
+            : `${Math.max(tracks.length ? 1 : 0, minutes)} min`
+    const by = selected
+        ? selected.artist_name
+        : detailArtist
+          ? ''
+          : artistList(tracks.map((track) => track.id))
+    $('#track-count').innerHTML = [
+        by && `<span class="font-semibold text-stone-100">${escapeHTML(by)}</span>`,
+        selected?.year,
+        `${tracks.length} track${tracks.length === 1 ? '' : 's'}`,
+        length,
+    ]
+        .filter(Boolean)
+        .join(' · ')
     if (!tracks.length) {
-        $('#track-list').innerHTML = emptyState(
-            state.query ? 'No results' : 'No tracks yet',
-            state.query
-                ? `Nothing in your library matches "${state.query}".`
-                : 'Tracks in your library will appear here.'
-        )
+        $('#track-list').innerHTML = detail
+            ? emptyState('No tracks yet', 'This list has no tracks.')
+            : emptyState(
+                  state.query ? 'No results' : 'No tracks yet',
+                  state.query
+                      ? `Nothing in your library matches "${state.query}".`
+                      : 'Tracks in your library will appear here.'
+              )
         return
     }
     $('#track-list').innerHTML = ''
@@ -319,7 +572,7 @@ const renderTracks = () => {
         button.type = 'button'
         button.className = `group grid w-full grid-cols-[2.5rem_minmax(0,1fr)_3rem] items-center border-b border-white/[0.045] px-4 py-3 text-left transition last:border-0 hover:bg-white/[0.045] md:grid-cols-[3rem_minmax(0,1.4fr)_minmax(8rem,1fr)_5rem] md:px-5 ${active ? 'bg-amber-300/[0.07]' : ''}`
         button.innerHTML = `
-      <span class="text-xs tabular-nums ${active ? 'text-amber-300' : 'text-stone-600 group-hover:text-stone-300'}">${active ? '●' : track.track_number || visibleIndex + 1}</span>
+      <span class="text-xs tabular-nums ${active ? 'text-amber-300' : 'text-stone-600 group-hover:text-stone-300'}">${active ? '●' : (!state.detail && track.track_number) || visibleIndex + 1}</span>
       <span class="flex min-w-0 items-center gap-3"><span class="h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-white/[0.05]">${artworkURL(track) ? `<img src="${artworkURL(track)}" alt="" class="h-full w-full object-cover">` : recordIcon}</span><span class="min-w-0"><span class="block truncate text-sm font-medium ${active ? 'text-amber-300' : 'text-stone-100'}">${escapeHTML(track.title)}</span><span class="mt-0.5 block truncate text-xs text-stone-500">${escapeHTML(track.artist_name)}</span></span></span>
       <span class="hidden truncate pr-4 text-sm text-stone-500 md:block">${escapeHTML(track.album_title || 'Single')}</span>
       <span class="text-right text-xs tabular-nums text-stone-600">${formatTime(track.duration)}</span>`
@@ -329,9 +582,11 @@ const renderTracks = () => {
 }
 
 const renderLibrary = () => {
-    renderHero()
-    renderAlbums()
-    renderTracks()
+    const browsing = isBrowsing()
+    $('#home').classList.toggle('hidden', browsing)
+    $('#browse').classList.toggle('hidden', !browsing)
+    if (browsing) renderTracks()
+    else renderHome()
 }
 
 const actionButtons = (type, id, includeLyrics = false) => `
@@ -449,11 +704,7 @@ const renderOverlay = () => {
     const open = state.lyricsPanelOpen
     $('#player-overlay').classList.toggle('hidden', !open)
     $('#player-overlay').classList.toggle('flex', open)
-    const lyrics = state.overlayTab === 'lyrics'
-    $('#now-playing-view').classList.toggle('hidden', lyrics)
-    $('#now-playing-view').classList.toggle('flex', !lyrics)
-    $('#lyrics-panel').classList.toggle('hidden', !lyrics)
-    $('#lyrics-panel').classList.toggle('flex', lyrics)
+    document.documentElement.classList.toggle('overflow-hidden', open)
     const chromeHidden = open && mobileLayout.matches
     $('#player-bar').classList.toggle('hidden', chromeHidden)
     $('#mobile-header').classList.toggle('hidden', chromeHidden)
@@ -466,14 +717,6 @@ const renderOverlay = () => {
         open ? 'Hide lyrics' : 'Show lyrics'
     )
     $('#lyrics-toggle').classList.toggle('text-amber-300', open)
-    document.querySelectorAll('[data-tab-switch]').forEach((link) => {
-        const active = link.dataset.tabSwitch === state.overlayTab
-        link.classList.toggle('bg-white/10', active)
-        link.classList.toggle('text-white', active)
-        link.classList.toggle('text-stone-400', !active)
-        if (active) link.setAttribute('aria-current', 'page')
-        else link.removeAttribute('aria-current')
-    })
 }
 
 const renderRoute = () => {
@@ -531,13 +774,15 @@ const render = () => {
 
 const load = async () => {
     const operation = ++loadOperation
-    const [artists, albums, tracks, playlists] = await Promise.all([
+    const [artists, albums, tracks, playlists, home] = await Promise.all([
         api('/music/artists'),
         api('/music/albums'),
         api('/music/tracks'),
         api('/music/playlists'),
+        api('/music/home').catch(() => null),
     ])
     if (operation !== loadOperation) return false
+    state.home = home
     state.artists = artists || []
     state.albums = albums || []
     state.tracks = tracks || []
@@ -615,6 +860,8 @@ const setPlaybackIcon = (playing) => {
 }
 
 const clearPlayer = () => {
+    flushListen()
+    listenTimer.reset('')
     audio.pause()
     audio.removeAttribute('src')
     audio.load()
@@ -626,7 +873,6 @@ const clearPlayer = () => {
     $('#player-art').innerHTML = recordIcon
     setSeekValue(0)
     $('#seek').max = 0
-    if ($('#np-seek')) $('#np-seek').max = 0
     setCurrentTime('0:00')
     setTotalTime('0:00')
     setPlaybackIcon(false)
@@ -638,6 +884,8 @@ const clearPlayer = () => {
 const playTrack = (id) => {
     const track = trackFor(id)
     if (!track) return
+    flushListen()
+    listenTimer.reset(id)
     state.currentID = id
     $('#player-title').textContent = track.title
     $('#player-meta').textContent =
@@ -656,13 +904,14 @@ const playTrack = (id) => {
                 error.message || error.name || 'Playback could not start.'
             )
         )
-    renderTracks()
+    if (isBrowsing()) renderTracks()
     if (state.view === 'playlists') renderPlaylistsPage()
     if (state.lyricsPanelOpen) loadPanelLyrics(track)
 }
 
 const playLibraryTrack = (id) => {
     state.playbackPlaylist = ''
+    state.queueIDs = state.detail ? state.detail.ids : []
     playTrack(id)
 }
 
@@ -683,7 +932,7 @@ const nextTrackID = (offset, ended = false) => {
 }
 
 const playFirstVisible = () => {
-    const track = filteredTracks()[0] || state.tracks[0]
+    const track = filteredTracks()[0] || (state.detail ? null : state.tracks[0])
     if (track) playLibraryTrack(track.id)
     else showMessage('There are no tracks to play.')
 }
@@ -692,6 +941,7 @@ const playPlaylist = (id) => {
     if (!playlistFor(id)) return
     state.selectedPlaylist = id
     state.playbackPlaylist = id
+    state.queueIDs = []
     state.selectedAlbum = ''
     if (state.view === 'player') renderLibrary()
     else renderPlaylistsPage()
@@ -872,10 +1122,9 @@ const openLyricsEditor = (track) => {
     syncLyrics()
 }
 
-const openOverlay = (tab = state.overlayTab) => {
+const openOverlay = () => {
     state.lyricsPanelOpen = true
-    state.overlayTab = tab
-    if (tab === 'lyrics') loadPanelLyrics(currentTrack())
+    loadPanelLyrics(currentTrack())
     const overlay = $('#player-overlay')
     overlay.classList.remove('slide-in')
     void overlay.offsetWidth
@@ -891,24 +1140,14 @@ const closeOverlay = () => {
     persistUi()
 }
 
-const setOverlayTab = (tab) => {
-    state.overlayTab = tab
-    if (tab === 'lyrics') loadPanelLyrics(currentTrack())
-    renderOverlay()
-    persistUi()
-}
-
 const setSeekValue = (value) => {
     $('#seek').value = value
-    $('#np-seek')?.setAttribute('value', value)
 }
 const setCurrentTime = (text) => {
     $('#current-time').textContent = text
-    if ($('#np-current-time')) $('#np-current-time').textContent = text
 }
 const setTotalTime = (text) => {
     $('#total-time').textContent = text
-    if ($('#np-total-time')) $('#np-total-time').textContent = text
 }
 
 const seekTo = (seconds, save = true) => {
@@ -1461,10 +1700,14 @@ const matchingPlaylists = () => {
 }
 
 const renderPlaylistPicker = () => {
-    const track = trackFor(state.playlistPickerTrack)
-    $('#playlist-picker-track').textContent = track
-        ? `${track.title} · ${track.artist_name}`
-        : ''
+    const ids = state.playlistPickerIDs
+    const track = trackFor(ids[0])
+    $('#playlist-picker-track').textContent =
+        ids.length > 1
+            ? `${ids.length} tracks`
+            : track
+              ? `${track.title} · ${track.artist_name}`
+              : ''
     const list = $('#playlist-picker-list')
     const playlists = matchingPlaylists()
     list.innerHTML =
@@ -1511,10 +1754,10 @@ const positionPlaylistPicker = (anchor) => {
     picker.style.top = `${top}px`
 }
 
-const openPlaylistPicker = (trackID, anchor) => {
-    const track = trackFor(trackID)
-    if (!track) return
-    state.playlistPickerTrack = trackID
+const openPlaylistPicker = (trackIDs, anchor) => {
+    const ids = trackIDs.filter(trackFor)
+    if (!ids.length) return
+    state.playlistPickerIDs = ids
     state.playlistPickerQuery = ''
     $('#playlist-picker-search').value = ''
     renderPlaylistPicker()
@@ -1524,18 +1767,21 @@ const openPlaylistPicker = (trackID, anchor) => {
 
 const addTrackToPlaylist = async (
     playlistID,
-    trackID = state.playlistPickerTrack
+    trackIDs = state.playlistPickerIDs
 ) => {
     if (!playlistID) {
         showMessage('Choose a playlist first.')
         return
     }
     const playlist = playlistFor(playlistID)
-    await api(`/music/playlists/${playlistID}/tracks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track_id: trackID }),
-    })
+    const have = new Set(playlist?.track_ids)
+    // The endpoint takes one track at a time and ignores duplicates.
+    for (const trackID of trackIDs.filter((id) => !have.has(id)))
+        await api(`/music/playlists/${playlistID}/tracks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ track_id: trackID }),
+        })
     await load()
     closePlaylistPicker()
     showMessage(`Added to ${playlist?.name || 'playlist'}.`)
@@ -1575,6 +1821,7 @@ const openDelete = (type, item) => {
 document.querySelectorAll('[data-route]').forEach((link) =>
     link.addEventListener('click', (event) => {
         event.preventDefault()
+        if (link.getAttribute('href') === '/') showHome()
         history.pushState({}, '', link.getAttribute('href'))
         renderRoute()
     })
@@ -1604,17 +1851,18 @@ $('#track-dialog').addEventListener('close', () => {
     if (mutationWasRunning) load().catch(() => {})
 })
 
-document.querySelectorAll('[data-all-music]').forEach((button) =>
-    button.addEventListener('click', () => {
-        state.selectedAlbum = ''
-        state.query = ''
-        $('#search').value = ''
-        renderLibrary()
-    })
-)
+$('#home').addEventListener('click', (event) => {
+    const card = event.target.closest('[data-home]')
+    if (card) homeAction(card)
+})
+$('#browse-back').addEventListener('click', () => {
+    showHome()
+    renderLibrary()
+})
 $('#search').addEventListener('input', (event) => {
     state.query = event.currentTarget.value.trim().toLowerCase()
-    renderTracks()
+    state.detail = null
+    renderLibrary()
 })
 const toggleShuffle = () => {
     state.shuffle = !state.shuffle
@@ -1630,15 +1878,12 @@ const toggleLoop = () => {
 ;[['#loop-toggle', toggleLoop], ['#np-loop-toggle', toggleLoop]].forEach(([sel, fn]) =>
     $(sel).addEventListener('click', fn)
 )
-$('#hero-play').addEventListener('click', playFirstVisible)
+$('#browse-play').addEventListener('click', playFirstVisible)
 $('#lyrics-toggle').addEventListener('click', () => {
     if (state.lyricsPanelOpen) closeOverlay()
-    else openOverlay('lyrics')
+    else openOverlay()
 })
 $('#lyrics-panel-close').addEventListener('click', closeOverlay)
-document.querySelectorAll('[data-tab-switch]').forEach((link) =>
-    link.addEventListener('click', () => setOverlayTab(link.dataset.tabSwitch))
-)
 $('#lyrics-panel-display').addEventListener('click', (event) => {
     const lyric = event.target.closest('[data-time]')
     if (lyric) seekTo(Number(lyric.dataset.time))
@@ -1742,8 +1987,21 @@ $('#playlist-track-list').addEventListener('click', async (event) => {
     }
 })
 $('#player-add-playlist').addEventListener('click', (event) =>
-    openPlaylistPicker(state.currentID, event.currentTarget)
+    openPlaylistPicker([state.currentID], event.currentTarget)
 )
+$('#browse-add').addEventListener('click', (event) =>
+    openPlaylistPicker(
+        filteredTracks().map((track) => track.id),
+        event.currentTarget
+    )
+)
+$('#browse-shuffle').addEventListener('click', () => {
+    const track = randomTrackID(filteredTracks())
+    if (!track) return showMessage('There are no tracks to play.')
+    state.shuffle = true
+    updatePlaybackModeUI()
+    playLibraryTrack(track)
+})
 $('#playlist-picker-close').addEventListener('click', closePlaylistPicker)
 $('#playlist-picker-search').addEventListener('input', (event) => {
     state.playlistPickerQuery = event.currentTarget.value
@@ -2097,7 +2355,7 @@ const playNext = () => {
 )
 ;[['#player-title', '#player-art']].forEach(([sel]) => {
     const el = $(sel)
-    el.addEventListener('click', () => openOverlay('main'))
+    el.addEventListener('click', () => openOverlay())
     el.classList.add('cursor-pointer')
 })
 ;[['#prev', playPrev], ['#np-prev', playPrev]].forEach(([sel, fn]) =>
@@ -2147,13 +2405,16 @@ const wireSeek = (input) => {
     })
 }
 wireSeek($('#seek'))
-if ($('#np-seek')) wireSeek($('#np-seek'))
 
 audio.addEventListener('play', () => {
+    // A restored track resumes without playTrack, so its listen starts here.
+    if (listenTimer.trackID !== state.currentID) listenTimer.reset(state.currentID)
     setPlaybackIcon(true)
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'
 })
 audio.addEventListener('pause', () => {
+    listenTimer.pause()
+    flushListen()
     setPlaybackIcon(false)
     persistPlayback(true)
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'
@@ -2161,14 +2422,20 @@ audio.addEventListener('pause', () => {
 audio.addEventListener('ended', () => {
     const id = nextTrackID(1, true)
     if (id) playTrack(id)
-    else setPlaybackIcon(false)
+    else {
+        flushListen()
+        setPlaybackIcon(false)
+    }
+})
+window.addEventListener('pagehide', flushListen)
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushListen()
 })
 audio.addEventListener('error', () =>
     showMessage(`Playback error ${audio.error?.code || 'unknown'}.`)
 )
 audio.addEventListener('loadedmetadata', () => {
     $('#seek').max = audio.duration || 0
-    if ($('#np-seek')) $('#np-seek').max = audio.duration || 0
     setTotalTime(formatTime(audio.duration))
     if (pendingResumeTime !== null) {
         const target = resumeTime(pendingResumeTime, audio.duration)
@@ -2181,6 +2448,10 @@ audio.addEventListener('loadedmetadata', () => {
     }
 })
 audio.addEventListener('timeupdate', () => {
+    if (!audio.paused) {
+        listenTimer.tick(audio.currentTime)
+        sendPlay(listenTimer.checkpoint(false))
+    }
     if (!state.seeking) {
         setSeekValue(audio.currentTime)
         setCurrentTime(formatTime(audio.currentTime))
@@ -2208,45 +2479,11 @@ if ('mediaSession' in navigator) {
     })
 }
 
-let swipeStart = null
-const overlayEl = $('#player-overlay')
-overlayEl.addEventListener('pointerdown', (event) => {
-    swipeStart = { x: event.clientX, y: event.clientY, active: true }
-    overlayEl.setPointerCapture?.(event.pointerId)
-})
-overlayEl.addEventListener('pointermove', (event) => {
-    if (!swipeStart?.active) return
-    const dx = event.clientX - swipeStart.x
-    const dy = event.clientY - swipeStart.y
-    if (Math.abs(dx) < 44 || Math.abs(dx) < Math.abs(dy) * 1.2) return
-    swipeStart.active = false
-    overlayEl.releasePointerCapture?.(event.pointerId)
-    const lyrics = state.overlayTab === 'lyrics'
-    if (dx < 0 && !lyrics) setOverlayTab('lyrics')
-    else if (dx > 0 && lyrics) setOverlayTab('main')
-})
-overlayEl.addEventListener('pointerup', () => {
-    swipeStart = null
-})
-overlayEl.addEventListener('pointercancel', () => {
-    swipeStart = null
-})
-overlayEl.addEventListener(
-    'touchmove',
-    (event) => {
-        if (!swipeStart?.active) return
-        const dx = event.touches[0].clientX - swipeStart.x
-        const dy = event.touches[0].clientY - swipeStart.y
-        if (Math.abs(dx) < Math.abs(dy)) return
-        event.preventDefault()
-    },
-    { passive: false }
-)
-
 updateVolumeUI()
 updatePlaybackModeUI()
 renderRoute()
 renderOverlay()
+initSync({ load, showMessage })
 load().catch((error) => {
     $('#track-list').innerHTML = emptyState(
         'Library unavailable',

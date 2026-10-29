@@ -1,12 +1,14 @@
-const CACHE = "utane-v1";
+const CACHE = "utane-v13";
 const PRECACHE = ["/", "/index.html", "/manifest.json"];
 
 const MODULES = [
   "/static/app.js",
   "/static/artwork.mjs",
+  "/static/home.mjs",
   "/static/lyrics.mjs",
   "/static/navigation.mjs",
-  "/static/playback.mjs"
+  "/static/playback.mjs",
+  "/static/sync.js"
 ];
 
 self.addEventListener("install", (event) => {
