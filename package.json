@@ -1,0 +1,13 @@
+{
+  "name": "utane",
+  "private": true,
+  "scripts": {
+    "sidecar": "go build -ldflags \"-H=windowsgui -s -w\" -o src-tauri/binaries/utane-x86_64-pc-windows-gnu.exe .",
+    "tauri": "tauri",
+    "dev": "npm run sidecar && tauri dev",
+    "build": "npm run sidecar && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

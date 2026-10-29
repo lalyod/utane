@@ -1,4 +1,7 @@
 data/
 .env
-utane
-utane.exe
+*.exe
+node_modules/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/

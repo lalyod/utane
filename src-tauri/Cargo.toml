@@ -1,0 +1,16 @@
+[package]
+name = "utane-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "utane_desktop_lib"
+crate-type = ["rlib"] # cdylib/staticlib are mobile-only; the DLL export table overflows with the GNU linker
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
