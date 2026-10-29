@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,35 +14,79 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/joho/godotenv"
 
 	"github.com/lalyod/utane/internal/db"
-	minioClient "github.com/lalyod/utane/internal/minio"
+	"github.com/lalyod/utane/internal/media"
 	"github.com/lalyod/utane/internal/music"
+	"github.com/lalyod/utane/internal/syncer"
+	"github.com/lalyod/utane/migrations"
+	"github.com/lalyod/utane/web"
 )
 
-func Serve() error {
-	_ = godotenv.Load()
+const defaultAddr = "127.0.0.1:8080"
 
-	dbPoll, err := db.New(context.Background())
+// dataDir is where the database and media live: UTANE_DATA, else the user config directory.
+func dataDir() (string, error) {
+	if dir := os.Getenv("UTANE_DATA"); dir != "" {
+		return dir, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, "Utane"), nil
+}
+
+// listenAddr reads UTANE_ADDR and refuses non-loopback hosts: the app has no authentication.
+func listenAddr() (string, error) {
+	addr := os.Getenv("UTANE_ADDR")
+	if addr == "" {
+		return defaultAddr, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("UTANE_ADDR: %w", err)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return "", fmt.Errorf("UTANE_ADDR %q is not a loopback address", addr)
+	}
+
+	return addr, nil
+}
+
+func Serve() error {
+	addr, err := listenAddr()
 	if err != nil {
 		return err
 	}
-	defer dbPoll.Close()
+	dir, err := dataDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 
-	minio := minioClient.New(
-		os.Getenv("MINIO_ENDPOINT"),
-		os.Getenv("MINIO_ACCESS_KEY"),
-		os.Getenv("MINIO_SECRET_KEY"),
-		os.Getenv("MINIO_BUCKET"),
-		os.Getenv("MINIO_USE_SSL") == "true",
-	)
+	conn, err := db.Open(filepath.Join(dir, "utane.db"))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 
-	minio.EnsureBucket(context.Background())
+	if err := migrateUp(context.Background(), conn, migrations.FS); err != nil {
+		return err
+	}
+
+	store, err := media.New(filepath.Join(dir, "media"))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
 
 	service := &music.Service{
-		Minio:               minio,
-		DB:                  dbPoll,
+		Media:               store,
+		DB:                  conn,
 		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
 		LyricsEndpoint:      "https://lrclib.net/api/get",
 		MusicBrainzEndpoint: "https://musicbrainz.org/ws/2/release/",
@@ -47,6 +94,14 @@ func Serve() error {
 		MusicBrainzInterval: time.Second,
 	}
 	handler := &music.Handler{Service: service}
+
+	devices, err := syncer.New(conn, store, dir)
+	if err != nil {
+		return err
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go devices.Run(ctx)
 
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
@@ -67,26 +122,28 @@ func Serve() error {
 			next.ServeHTTP(ww, r)
 		})
 	})
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join("web", "index.html"))
-	})
-	r.Get("/manage", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join("web", "index.html"))
-	})
-	r.Get("/playlists", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join("web", "index.html"))
-	})
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	index := func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, web.FS, "index.html")
+	}
+	r.Get("/", index)
+	r.Get("/manage", index)
+	r.Get("/playlists", index)
+	r.Handle("/static/*", http.FileServerFS(web.FS))
 	r.Get("/manifest.json", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, filepath.Join("web", "manifest.json"))
+		http.ServeFileFS(w, r, web.FS, "manifest.json")
 	})
 	r.Get("/sw.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Service-Worker-Allowed", "/")
-		http.ServeFile(w, r, filepath.Join("web", "sw.js"))
+		http.ServeFileFS(w, r, web.FS, "sw.js")
 	})
 	r.Mount("/music", handler.Routes())
+	r.Mount("/sync", devices.Routes())
 
-	log.Println("Server running on :8080")
+	log.Println("Server running on " + addr)
 
-	return http.ListenAndServe(":8080", r)
+	if err := http.ListenAndServe(addr, r); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+
+	return nil
 }
