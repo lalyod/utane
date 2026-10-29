@@ -91,7 +91,7 @@ func (s *Service) ReplaceArtistAvatar(
 	defer tx.Rollback(ctx)
 
 	var oldAvatar sql.NullString
-	err = tx.QueryRow(ctx, `SELECT avatar_object FROM artists WHERE id = $1 FOR UPDATE`, id).Scan(&oldAvatar)
+	err = tx.QueryRow(ctx, `SELECT avatar_object FROM artists WHERE id = ?1`, id).Scan(&oldAvatar)
 	if err != nil {
 		s.removeObject(ctx, newAvatar)
 
@@ -100,9 +100,9 @@ func (s *Service) ReplaceArtistAvatar(
 
 	_, err = tx.Exec(ctx, `
 		UPDATE artists
-		SET avatar_object = $1, avatar_source_url = NULL,
+		SET avatar_object = ?1, avatar_source_url = NULL,
 			avatar_attribution = NULL, avatar_license = NULL
-		WHERE id = $2
+		WHERE id = ?2
 	`, newAvatar, id)
 	if err != nil {
 		s.removeObject(ctx, newAvatar)
@@ -129,7 +129,7 @@ func (s *Service) DeleteArtistAvatar(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	var avatar sql.NullString
-	err = tx.QueryRow(ctx, `SELECT avatar_object FROM artists WHERE id = $1 FOR UPDATE`, id).Scan(&avatar)
+	err = tx.QueryRow(ctx, `SELECT avatar_object FROM artists WHERE id = ?1`, id).Scan(&avatar)
 	if err != nil {
 		return serviceError(err)
 	}
@@ -138,7 +138,7 @@ func (s *Service) DeleteArtistAvatar(ctx context.Context, id string) error {
 		UPDATE artists
 		SET avatar_object = NULL, avatar_source_url = NULL,
 			avatar_attribution = NULL, avatar_license = NULL
-		WHERE id = $1
+		WHERE id = ?1
 	`, id)
 	if err != nil {
 		return serviceError(err)
@@ -160,7 +160,7 @@ func (s *Service) GetArtistAvatarObject(ctx context.Context, id string) (string,
 	err := s.DB.QueryRow(ctx, `
 		SELECT avatar_object
 		FROM artists
-		WHERE id = $1 AND avatar_object IS NOT NULL
+		WHERE id = ?1 AND avatar_object IS NOT NULL
 	`, id).Scan(&object)
 
 	return object, serviceError(err)

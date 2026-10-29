@@ -2,16 +2,11 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 
 	"github.com/lalyod/utane/internal/db"
 )
@@ -19,48 +14,30 @@ import (
 type migration struct {
 	Version int64
 	Name    string
-	Path    string
+	File    string
 }
 
-func Migrate() error {
-	_ = godotenv.Load()
-
-	ctx := context.Background()
-	pool, err := db.New(ctx)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-
-	return migrateUp(ctx, pool, "migrations")
-}
-
-func migrateUp(ctx context.Context, pool *pgxpool.Pool, dir string) error {
-	migrations, err := discoverMigrations(dir)
+func migrateUp(ctx context.Context, conn *db.DB, migrations fs.FS) error {
+	found, err := discoverMigrations(migrations)
 	if err != nil {
 		return err
 	}
 
-	_, err = pool.Exec(ctx, `
+	_, err = conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version BIGINT PRIMARY KEY,
 			name TEXT NOT NULL,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
 	if err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	if err := baselineInitialMigration(ctx, pool, migrations); err != nil {
-		return err
-	}
-
-	applied := 0
-	for _, migration := range migrations {
+	for _, migration := range found {
 		var exists bool
-		if err := pool.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = ?1)
 		`, migration.Version).Scan(&exists); err != nil {
 			return fmt.Errorf("check migration %s: %w", migration.Name, err)
 		}
@@ -68,66 +45,21 @@ func migrateUp(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 			continue
 		}
 
-		if err := applyMigration(ctx, pool, migration); err != nil {
+		if err := applyMigration(ctx, conn, migrations, migration); err != nil {
 			return err
 		}
-		fmt.Printf("applied %s\n", migration.Name)
-		applied++
-	}
-
-	if applied == 0 {
-		fmt.Println("database is up to date")
 	}
 
 	return nil
 }
 
-func baselineInitialMigration(ctx context.Context, pool *pgxpool.Pool, migrations []migration) error {
-	var schemaExists bool
-	var schemaComplete bool
-	if err := pool.QueryRow(ctx, `
-		SELECT
-			to_regclass('public.artists') IS NOT NULL
-			OR to_regclass('public.albums') IS NOT NULL
-			OR to_regclass('public.tracks') IS NOT NULL,
-			to_regclass('public.artists') IS NOT NULL
-			AND to_regclass('public.albums') IS NOT NULL
-			AND to_regclass('public.tracks') IS NOT NULL
-	`).Scan(&schemaExists, &schemaComplete); err != nil {
-		return fmt.Errorf("check existing schema: %w", err)
-	}
-	if !schemaExists {
-		return nil
-	}
-	if !schemaComplete {
-		return errors.New("existing music schema is incomplete; cannot baseline migration 001")
-	}
-
-	for _, migration := range migrations {
-		if migration.Version != 1 {
-			continue
-		}
-		_, err := pool.Exec(ctx, `
-			INSERT INTO schema_migrations (version, name)
-			VALUES ($1, $2)
-			ON CONFLICT (version) DO NOTHING
-		`, migration.Version, migration.Name)
-		if err != nil {
-			return fmt.Errorf("baseline migration %s: %w", migration.Name, err)
-		}
-		break
-	}
-
-	return nil
-}
-
-func applyMigration(ctx context.Context, pool *pgxpool.Pool, migration migration) error {
-	sql, err := os.ReadFile(migration.Path)
+func applyMigration(ctx context.Context, conn *db.DB, migrations fs.FS, migration migration) error {
+	sql, err := fs.ReadFile(migrations, migration.File)
 	if err != nil {
 		return fmt.Errorf("read migration %s: %w", migration.Name, err)
 	}
 
-	tx, err := pool.Begin(ctx)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin migration %s: %w", migration.Name, err)
 	}
@@ -138,7 +70,7 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool, migration migration
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO schema_migrations (version, name)
-		VALUES ($1, $2)
+		VALUES (?1, ?2)
 	`, migration.Version, migration.Name); err != nil {
 		return fmt.Errorf("record migration %s: %w", migration.Name, err)
 	}
@@ -149,13 +81,13 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool, migration migration
 	return nil
 }
 
-func discoverMigrations(dir string) ([]migration, error) {
-	entries, err := os.ReadDir(dir)
+func discoverMigrations(migrations fs.FS) ([]migration, error) {
+	entries, err := fs.ReadDir(migrations, ".")
 	if err != nil {
 		return nil, fmt.Errorf("read migrations: %w", err)
 	}
 
-	migrations := make([]migration, 0, len(entries))
+	found := make([]migration, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
 			continue
@@ -168,21 +100,21 @@ func discoverMigrations(dir string) ([]migration, error) {
 			return nil, fmt.Errorf("invalid migration filename %q", entry.Name())
 		}
 
-		migrations = append(migrations, migration{
+		found = append(found, migration{
 			Version: version,
 			Name:    name,
-			Path:    filepath.Join(dir, entry.Name()),
+			File:    entry.Name(),
 		})
 	}
 
-	sort.Slice(migrations, func(i int, j int) bool {
-		return migrations[i].Version < migrations[j].Version
+	sort.Slice(found, func(i int, j int) bool {
+		return found[i].Version < found[j].Version
 	})
-	for index := 1; index < len(migrations); index++ {
-		if migrations[index].Version == migrations[index-1].Version {
-			return nil, fmt.Errorf("duplicate migration version %d", migrations[index].Version)
+	for index := 1; index < len(found); index++ {
+		if found[index].Version == found[index-1].Version {
+			return nil, fmt.Errorf("duplicate migration version %d", found[index].Version)
 		}
 	}
 
-	return migrations, nil
+	return found, nil
 }

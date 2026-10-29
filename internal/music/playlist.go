@@ -2,6 +2,7 @@ package music
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/lalyod/utane/internal/model"
 )
@@ -9,10 +10,8 @@ import (
 func (s *Service) GetPlaylists(ctx context.Context) ([]model.Playlist, error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT playlists.id, playlists.name, playlists.created_at,
-			COALESCE(array_agg(playlist_tracks.track_id::text ORDER BY playlist_tracks.position) FILTER (WHERE playlist_tracks.track_id IS NOT NULL), ARRAY[]::text[])
+			(SELECT json_group_array(track_id) FROM (SELECT track_id FROM playlist_tracks WHERE playlist_id = playlists.id ORDER BY position))
 		FROM playlists
-		LEFT JOIN playlist_tracks ON playlist_tracks.playlist_id = playlists.id
-		GROUP BY playlists.id
 		ORDER BY playlists.name ASC
 	`)
 	if err != nil {
@@ -23,7 +22,11 @@ func (s *Service) GetPlaylists(ctx context.Context) ([]model.Playlist, error) {
 	playlists := []model.Playlist{}
 	for rows.Next() {
 		var playlist model.Playlist
-		if err := rows.Scan(&playlist.ID, &playlist.Name, &playlist.CreatedAt, &playlist.TrackIDs); err != nil {
+		var trackIDs string
+		if err := rows.Scan(&playlist.ID, &playlist.Name, &playlist.CreatedAt, &trackIDs); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(trackIDs), &playlist.TrackIDs); err != nil {
 			return nil, err
 		}
 		playlists = append(playlists, playlist)
@@ -33,13 +36,13 @@ func (s *Service) GetPlaylists(ctx context.Context) ([]model.Playlist, error) {
 }
 
 func (s *Service) CreatePlaylist(ctx context.Context, name string) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO playlists (name) VALUES ($1)`, name)
+	_, err := s.DB.Exec(ctx, `INSERT INTO playlists (name) VALUES (?1)`, name)
 
 	return serviceError(err)
 }
 
 func (s *Service) PatchPlaylist(ctx context.Context, id string, name string) error {
-	result, err := s.DB.Exec(ctx, `UPDATE playlists SET name = $1 WHERE id = $2`, name, id)
+	result, err := s.DB.Exec(ctx, `UPDATE playlists SET name = ?1 WHERE id = ?2`, name, id)
 	if err != nil {
 		return serviceError(err)
 	}
@@ -51,7 +54,7 @@ func (s *Service) PatchPlaylist(ctx context.Context, id string, name string) err
 }
 
 func (s *Service) DeletePlaylist(ctx context.Context, id string) error {
-	result, err := s.DB.Exec(ctx, `DELETE FROM playlists WHERE id = $1`, id)
+	result, err := s.DB.Exec(ctx, `DELETE FROM playlists WHERE id = ?1`, id)
 	if err != nil {
 		return serviceError(err)
 	}
@@ -70,13 +73,13 @@ func (s *Service) AddPlaylistTrack(ctx context.Context, playlistID string, track
 	defer tx.Rollback(ctx)
 
 	var exists bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM playlists WHERE id = $1)`, playlistID).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM playlists WHERE id = ?1)`, playlistID).Scan(&exists); err != nil {
 		return serviceError(err)
 	}
 	if !exists {
 		return ErrNotFound
 	}
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tracks WHERE id = $1)`, trackID).Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tracks WHERE id = ?1)`, trackID).Scan(&exists); err != nil {
 		return serviceError(err)
 	}
 	if !exists {
@@ -85,7 +88,7 @@ func (s *Service) AddPlaylistTrack(ctx context.Context, playlistID string, track
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO playlist_tracks (playlist_id, track_id, position)
-		VALUES ($1, $2, COALESCE((SELECT max(position) + 1 FROM playlist_tracks WHERE playlist_id = $1), 1))
+		VALUES (?1, ?2, COALESCE((SELECT max(position) + 1 FROM playlist_tracks WHERE playlist_id = ?1), 1))
 		ON CONFLICT (playlist_id, track_id) DO NOTHING
 	`, playlistID, trackID)
 	if err != nil {
@@ -96,7 +99,7 @@ func (s *Service) AddPlaylistTrack(ctx context.Context, playlistID string, track
 }
 
 func (s *Service) DeletePlaylistTrack(ctx context.Context, playlistID string, trackID string) error {
-	result, err := s.DB.Exec(ctx, `DELETE FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`, playlistID, trackID)
+	result, err := s.DB.Exec(ctx, `DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2`, playlistID, trackID)
 	if err != nil {
 		return serviceError(err)
 	}

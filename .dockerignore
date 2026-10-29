@@ -1,9 +1,0 @@
-.git
-.github
-.env
-data
-utane.exe
-*.log
-tmp
-dist
-build

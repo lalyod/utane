@@ -1,1 +1,0 @@
-ALTER TABLE tracks ADD COLUMN IF NOT EXISTS cover_object TEXT;

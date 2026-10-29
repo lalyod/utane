@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/lalyod/utane/internal/model"
 )
 
@@ -14,7 +13,7 @@ func (s *Service) CreateArtist(
 	ctx context.Context,
 	name string,
 ) error {
-	_, err := s.DB.Exec(ctx, `INSERT INTO artists ( name ) VALUES ( $1 )`, name)
+	_, err := s.DB.Exec(ctx, `INSERT INTO artists ( name ) VALUES ( ?1 )`, name)
 
 	return serviceError(err)
 }
@@ -57,7 +56,7 @@ func (s *Service) GetArtist(ctx context.Context, id string) (*model.Artist, erro
 	err := s.DB.QueryRow(ctx, `
 		SELECT id, name, avatar_object IS NOT NULL, created_at
 		FROM artists
-		WHERE id = $1
+		WHERE id = ?1
 	`, id).Scan(
 		&artist.ID,
 		&artist.Name,
@@ -74,8 +73,8 @@ func (s *Service) GetArtist(ctx context.Context, id string) (*model.Artist, erro
 func (s *Service) PatchArtist(ctx context.Context, id string, name string) error {
 	result, err := s.DB.Exec(ctx, `
 		UPDATE artists
-		SET name = $1
-		WHERE id = $2
+		SET name = ?1
+		WHERE id = ?2
 		`, name, id)
 	if err != nil {
 		return serviceError(err)
@@ -95,8 +94,8 @@ func (s *Service) DeleteArtist(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	var avatar sql.NullString
-	err = tx.QueryRow(ctx, `SELECT avatar_object FROM artists WHERE id = $1 FOR UPDATE`, id).Scan(&avatar)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = tx.QueryRow(ctx, `SELECT avatar_object FROM artists WHERE id = ?1`, id).Scan(&avatar)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -105,8 +104,8 @@ func (s *Service) DeleteArtist(ctx context.Context, id string) error {
 
 	var hasMusic bool
 	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM albums WHERE artist_id = $1)
-			OR EXISTS (SELECT 1 FROM tracks WHERE artist_id = $1)
+		SELECT EXISTS (SELECT 1 FROM albums WHERE artist_id = ?1)
+			OR EXISTS (SELECT 1 FROM tracks WHERE artist_id = ?1)
 	`, id).Scan(&hasMusic)
 	if err != nil {
 		return serviceError(err)
@@ -115,7 +114,7 @@ func (s *Service) DeleteArtist(ctx context.Context, id string) error {
 		return fmt.Errorf("%w: artist has albums or tracks", ErrConflict)
 	}
 
-	if _, err = tx.Exec(ctx, `DELETE FROM artists WHERE id = $1`, id); err != nil {
+	if _, err = tx.Exec(ctx, `DELETE FROM artists WHERE id = ?1`, id); err != nil {
 		return serviceError(err)
 	}
 

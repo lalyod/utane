@@ -13,6 +13,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/lalyod/utane/internal/media"
 )
 
 type Handler struct {
@@ -39,6 +41,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/artists/{id}", h.GetArtist)
 	r.Get("/artists/{id}/avatar", h.GetArtistAvatar)
 	r.Get("/playlists", h.GetPlaylists)
+	r.Get("/home", h.GetHome)
+	r.Put("/plays/{id}", h.PutPlay)
 
 	r.Post("/tracks", h.CreateTrack)
 	r.Patch("/tracks/{id}", h.PatchTrack)
@@ -153,14 +157,14 @@ func (h *Handler) ServeObject(w http.ResponseWriter, r *http.Request, object str
 	}
 	defer file.Close()
 
-	if contentType := servedContentType(info.Key, info.ContentType); contentType != "" {
+	if contentType := servedContentType(object, media.ContentType(object)); contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	} else {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	http.ServeContent(w, r, filepath.Base(info.Key), info.LastModified, file)
+	http.ServeContent(w, r, filepath.Base(object), info.ModTime(), file)
 }
 
 func servedContentType(name string, contentType string) string {

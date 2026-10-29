@@ -2,14 +2,17 @@ package music
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -18,17 +21,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/minio/minio-go/v7"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
-	minioClient "github.com/lalyod/utane/internal/minio"
+	"github.com/lalyod/utane/internal/db"
+	"github.com/lalyod/utane/internal/media"
 )
 
 type Service struct {
-	Minio               *minioClient.Client
-	DB                  *pgxpool.Pool
+	Media               *media.Store
+	DB                  *db.DB
 	HTTPClient          *http.Client
 	LyricsEndpoint      string
 	MusicBrainzEndpoint string
@@ -75,19 +77,19 @@ type musicBrainzReleaseResponse struct {
 }
 
 func serviceError(err error) error {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return err
 	}
 
-	switch pgErr.Code {
-	case "23505":
+	switch sqliteErr.Code() {
+	case sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
 		return fmt.Errorf("%w: value already exists", ErrConflict)
-	case "23503", "22P02":
+	case sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
 		return ErrInvalid
 	default:
 		return err
@@ -325,19 +327,10 @@ func (s *Service) UploadFile(
 	header *multipart.FileHeader,
 	dir string,
 ) (string, error) {
-	objectName := dir + "/" + uuid.New().String() + "-" + filepath.Base(header.Filename)
+	// Only the extension of the upload name is kept: original names can hold characters Windows rejects.
+	objectName := dir + "/" + uuid.New().String() + strings.ToLower(filepath.Ext(filepath.Base(header.Filename)))
 
-	_, err := s.Minio.PutObject(
-		ctx,
-		s.Minio.Bucket,
-		objectName,
-		file,
-		header.Size,
-		minio.PutObjectOptions{
-			ContentType: header.Header.Get("Content-Type"),
-		},
-	)
-	if err != nil {
+	if err := s.Media.Put(objectName, file); err != nil {
 		return "", err
 	}
 
@@ -345,10 +338,7 @@ func (s *Service) UploadFile(
 }
 
 func (s *Service) removeObject(ctx context.Context, object string) {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-
-	if err := s.Minio.RemoveObject(cleanupCtx, s.Minio.Bucket, object, minio.RemoveObjectOptions{}); err != nil {
+	if err := s.Media.Remove(object); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		slog.Error("failed to remove media object", "object", object, "error", err)
 	}
 }
@@ -356,19 +346,20 @@ func (s *Service) removeObject(ctx context.Context, object string) {
 func (s *Service) OpenObject(
 	ctx context.Context,
 	object string,
-) (*minio.Object, minio.ObjectInfo, error) {
-	file, err := s.Minio.GetObject(ctx, s.Minio.Bucket, object, minio.GetObjectOptions{})
+) (*os.File, os.FileInfo, error) {
+	file, err := s.Media.Open(object)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, ErrNotFound
+	}
 	if err != nil {
-		return nil, minio.ObjectInfo{}, err
+		return nil, nil, err
 	}
 
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()
-		if minio.ToErrorResponse(err).StatusCode == http.StatusNotFound {
-			return nil, minio.ObjectInfo{}, ErrNotFound
-		}
-		return nil, minio.ObjectInfo{}, err
+
+		return nil, nil, err
 	}
 
 	return file, info, nil

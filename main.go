@@ -17,8 +17,6 @@ func run(args []string) error {
 	switch {
 	case len(args) == 1 && args[0] == "serve":
 		return app.Serve()
-	case len(args) == 2 && args[0] == "db" && args[1] == "migrate":
-		return app.Migrate()
 	default:
 		return usageError{}
 	}
@@ -27,5 +25,5 @@ func run(args []string) error {
 type usageError struct{}
 
 func (usageError) Error() string {
-	return "usage: go run . serve | go run . db migrate"
+	return "usage: go run . serve"
 }

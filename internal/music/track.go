@@ -17,7 +17,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/lalyod/utane/internal/model"
 )
 
@@ -39,7 +38,7 @@ func (s *Service) AlbumBelongsToArtist(ctx context.Context, artistID string, alb
 		SELECT EXISTS (
 			SELECT 1
 			FROM albums
-			WHERE id = $1 AND artist_id = $2
+			WHERE id = ?1 AND artist_id = ?2
 		)
 	`, albumID, artistID).Scan(&ok)
 
@@ -82,7 +81,7 @@ func (s *Service) CreateTrack(
 			duration,
 			object_path,
 			track_number
-		) VALUES ($1, $2, $3, $4, $5, $6)
+		) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 		RETURNING id
 	`, artistID, album, title, duration, object, number).Scan(&id)
 	if err != nil {
@@ -120,7 +119,7 @@ func (s *Service) PatchTrack(
 
 	var oldObject string
 	var oldDuration int
-	err = tx.QueryRow(ctx, `SELECT object_path, duration FROM tracks WHERE id = $1 FOR UPDATE`, id).Scan(&oldObject, &oldDuration)
+	err = tx.QueryRow(ctx, `SELECT object_path, duration FROM tracks WHERE id = ?1`, id).Scan(&oldObject, &oldDuration)
 	if err != nil {
 		if newObject != "" {
 			s.removeObject(ctx, newObject)
@@ -131,7 +130,7 @@ func (s *Service) PatchTrack(
 
 	if albumID != "" {
 		var albumOK bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM albums WHERE id = $1 AND artist_id = $2)`, albumID, artistID).Scan(&albumOK)
+		err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM albums WHERE id = ?1 AND artist_id = ?2)`, albumID, artistID).Scan(&albumOK)
 		if err != nil || !albumOK {
 			if newObject != "" {
 				s.removeObject(ctx, newObject)
@@ -162,8 +161,8 @@ func (s *Service) PatchTrack(
 
 	_, err = tx.Exec(ctx, `
 		UPDATE tracks
-		SET artist_id = $1, album_id = $2, title = $3, track_number = $4, duration = $5, object_path = $6
-		WHERE id = $7
+		SET artist_id = ?1, album_id = ?2, title = ?3, track_number = ?4, duration = ?5, object_path = ?6
+		WHERE id = ?7
 	`, artistID, album, title, number, *duration, object, id)
 	if err != nil {
 		if newObject != "" {
@@ -187,7 +186,7 @@ func (s *Service) PatchTrack(
 func (s *Service) DeleteTrack(ctx context.Context, id string) error {
 	var object string
 	var cover sql.NullString
-	err := s.DB.QueryRow(ctx, `DELETE FROM tracks WHERE id = $1 RETURNING object_path, cover_object`, id).Scan(&object, &cover)
+	err := s.DB.QueryRow(ctx, `DELETE FROM tracks WHERE id = ?1 RETURNING object_path, cover_object`, id).Scan(&object, &cover)
 	if err != nil {
 		return serviceError(err)
 	}
@@ -202,7 +201,7 @@ func (s *Service) DeleteTrack(ctx context.Context, id string) error {
 
 func (s *Service) GetTracks(ctx context.Context) ([]model.Track, error) {
 	rows, err := s.DB.Query(ctx, `
-		SELECT tracks.id, tracks.artist_id, artists.name, COALESCE(tracks.album_id::text, ''),
+		SELECT tracks.id, tracks.artist_id, artists.name, COALESCE(tracks.album_id, ''),
 			COALESCE(albums.title, ''), tracks.title, tracks.duration,
 			COALESCE(tracks.track_number, 0), tracks.cover_object IS NOT NULL,
 			tracks.synced_lyrics, tracks.created_at
@@ -255,7 +254,7 @@ func (s *Service) SearchTrackCovers(ctx context.Context, id string) ([]CoverCand
 		SELECT tracks.title, artists.name, tracks.album_id IS NOT NULL, tracks.cover_object IS NOT NULL
 		FROM tracks
 		JOIN artists ON artists.id = tracks.artist_id
-		WHERE tracks.id = $1
+		WHERE tracks.id = ?1
 	`, id).Scan(&title, &artist, &hasAlbum, &hasCover)
 	if err != nil {
 		return nil, serviceError(err)
@@ -290,7 +289,7 @@ func (s *Service) FetchTrackCover(ctx context.Context, trackID string, releaseID
 	err := s.DB.QueryRow(ctx, `
 		SELECT album_id IS NOT NULL, cover_object IS NOT NULL
 		FROM tracks
-		WHERE id = $1
+		WHERE id = ?1
 	`, trackID).Scan(&hasAlbum, &hasCover)
 	if err != nil {
 		return serviceError(err)
@@ -331,8 +330,7 @@ func (s *Service) ReplaceTrackCover(ctx context.Context, id string, newCover str
 	err = tx.QueryRow(ctx, `
 		SELECT album_id IS NOT NULL, cover_object
 		FROM tracks
-		WHERE id = $1
-		FOR UPDATE
+		WHERE id = ?1
 	`, id).Scan(&hasAlbum, &oldCover)
 	if err != nil {
 		s.removeObject(ctx, newCover)
@@ -345,7 +343,7 @@ func (s *Service) ReplaceTrackCover(ctx context.Context, id string, newCover str
 		return err
 	}
 
-	if _, err = tx.Exec(ctx, `UPDATE tracks SET cover_object = $1 WHERE id = $2`, newCover, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE tracks SET cover_object = ?1 WHERE id = ?2`, newCover, id); err != nil {
 		s.removeObject(ctx, newCover)
 
 		return serviceError(err)
@@ -370,12 +368,12 @@ func (s *Service) DeleteTrackCover(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	var cover sql.NullString
-	err = tx.QueryRow(ctx, `SELECT cover_object FROM tracks WHERE id = $1 FOR UPDATE`, id).Scan(&cover)
+	err = tx.QueryRow(ctx, `SELECT cover_object FROM tracks WHERE id = ?1`, id).Scan(&cover)
 	if err != nil {
 		return serviceError(err)
 	}
 
-	if _, err = tx.Exec(ctx, `UPDATE tracks SET cover_object = NULL WHERE id = $1`, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE tracks SET cover_object = NULL WHERE id = ?1`, id); err != nil {
 		return serviceError(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -395,7 +393,7 @@ func (s *Service) GetTrackObject(ctx context.Context, id string) (string, error)
 	err := s.DB.QueryRow(ctx, `
 		SELECT object_path
 		FROM tracks
-		WHERE id = $1
+		WHERE id = ?1
 	`, id).Scan(&object)
 
 	return object, err
@@ -406,7 +404,7 @@ func (s *Service) GetTrackCoverObject(ctx context.Context, id string) (string, e
 	err := s.DB.QueryRow(ctx, `
 		SELECT cover_object
 		FROM tracks
-		WHERE id = $1 AND cover_object IS NOT NULL
+		WHERE id = ?1 AND cover_object IS NOT NULL
 	`, id).Scan(&object)
 
 	return object, serviceError(err)
@@ -415,8 +413,8 @@ func (s *Service) GetTrackCoverObject(ctx context.Context, id string) (string, e
 func (s *Service) SetTrackLyrics(ctx context.Context, id string, lyrics string) error {
 	result, err := s.DB.Exec(ctx, `
 		UPDATE tracks
-		SET synced_lyrics = $1
-		WHERE id = $2
+		SET synced_lyrics = ?1
+		WHERE id = ?2
 	`, lyrics, id)
 	if err != nil {
 		return err
@@ -439,9 +437,9 @@ func (s *Service) LookupTrackLyrics(ctx context.Context, id string) (string, err
 		FROM tracks
 		JOIN artists ON artists.id = tracks.artist_id
 		LEFT JOIN albums ON albums.id = tracks.album_id
-		WHERE tracks.id = $1
+		WHERE tracks.id = ?1
 	`, id).Scan(&artistName, &albumTitle, &trackTitle, &duration)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrLyricsNotFound
 	}
 	if err != nil {

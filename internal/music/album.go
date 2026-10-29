@@ -39,7 +39,7 @@ func (s *Service) CreateAlbum(
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO albums (artist_id, title, year, cover_object)
-		VALUES ($1, $2, $3, $4)
+		VALUES (?1, ?2, ?3, ?4)
 	`, artistID, title, albumYear, cover)
 	if err != nil && coverObject != "" {
 		s.removeObject(ctx, coverObject)
@@ -74,7 +74,7 @@ func (s *Service) PatchAlbum(
 	defer tx.Rollback(ctx)
 
 	var oldCover sql.NullString
-	err = tx.QueryRow(ctx, `SELECT cover_object FROM albums WHERE id = $1 FOR UPDATE`, id).Scan(&oldCover)
+	err = tx.QueryRow(ctx, `SELECT cover_object FROM albums WHERE id = ?1`, id).Scan(&oldCover)
 	if err != nil {
 		if newCover != "" {
 			s.removeObject(ctx, newCover)
@@ -95,7 +95,7 @@ func (s *Service) PatchAlbum(
 		cover = oldCover.String
 	}
 
-	_, err = tx.Exec(ctx, `UPDATE albums SET title = $1, year = $2, cover_object = $3 WHERE id = $4`, title, albumYear, cover, id)
+	_, err = tx.Exec(ctx, `UPDATE albums SET title = ?1, year = ?2, cover_object = ?3 WHERE id = ?4`, title, albumYear, cover, id)
 	if err != nil {
 		if newCover != "" {
 			s.removeObject(ctx, newCover)
@@ -123,15 +123,15 @@ func (s *Service) DeleteAlbum(ctx context.Context, id string) error {
 	defer tx.Rollback(ctx)
 
 	var cover sql.NullString
-	err = tx.QueryRow(ctx, `SELECT cover_object FROM albums WHERE id = $1 FOR UPDATE`, id).Scan(&cover)
+	err = tx.QueryRow(ctx, `SELECT cover_object FROM albums WHERE id = ?1`, id).Scan(&cover)
 	if err != nil {
 		return serviceError(err)
 	}
 
-	if _, err = tx.Exec(ctx, `UPDATE tracks SET album_id = NULL, track_number = NULL WHERE album_id = $1`, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE tracks SET album_id = NULL, track_number = NULL WHERE album_id = ?1`, id); err != nil {
 		return serviceError(err)
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM albums WHERE id = $1`, id); err != nil {
+	if _, err = tx.Exec(ctx, `DELETE FROM albums WHERE id = ?1`, id); err != nil {
 		return serviceError(err)
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -188,10 +188,10 @@ func (s *Service) SearchAlbumCovers(ctx context.Context, id string) ([]CoverCand
 	var year string
 	var artist string
 	err := s.DB.QueryRow(ctx, `
-		SELECT albums.title, COALESCE(albums.year::text, ''), artists.name
+		SELECT albums.title, COALESCE(CAST(albums.year AS TEXT), ''), artists.name
 		FROM albums
 		JOIN artists ON artists.id = albums.artist_id
-		WHERE albums.id = $1
+		WHERE albums.id = ?1
 	`, id).Scan(&title, &year, &artist)
 	if err != nil {
 		return nil, serviceError(err)
@@ -211,7 +211,7 @@ func (s *Service) SearchAlbumCovers(ctx context.Context, id string) ([]CoverCand
 
 func (s *Service) FetchAlbumCover(ctx context.Context, albumID string, releaseID string) error {
 	var albumExists bool
-	if err := s.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM albums WHERE id = $1)`, albumID).Scan(&albumExists); err != nil {
+	if err := s.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM albums WHERE id = ?1)`, albumID).Scan(&albumExists); err != nil {
 		return serviceError(err)
 	}
 	if !albumExists {
@@ -246,14 +246,14 @@ func (s *Service) ReplaceAlbumCover(ctx context.Context, id string, newCover str
 	defer tx.Rollback(ctx)
 
 	var oldCover sql.NullString
-	err = tx.QueryRow(ctx, `SELECT cover_object FROM albums WHERE id = $1 FOR UPDATE`, id).Scan(&oldCover)
+	err = tx.QueryRow(ctx, `SELECT cover_object FROM albums WHERE id = ?1`, id).Scan(&oldCover)
 	if err != nil {
 		s.removeObject(ctx, newCover)
 
 		return serviceError(err)
 	}
 
-	if _, err = tx.Exec(ctx, `UPDATE albums SET cover_object = $1 WHERE id = $2`, newCover, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE albums SET cover_object = ?1 WHERE id = ?2`, newCover, id); err != nil {
 		s.removeObject(ctx, newCover)
 
 		return serviceError(err)
@@ -275,7 +275,7 @@ func (s *Service) GetAlbumCoverObject(ctx context.Context, id string) (string, e
 	err := s.DB.QueryRow(ctx, `
 		SELECT cover_object
 		FROM albums
-		WHERE id = $1 AND cover_object IS NOT NULL
+		WHERE id = ?1 AND cover_object IS NOT NULL
 	`, id).Scan(&object)
 
 	return object, err

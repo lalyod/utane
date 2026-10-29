@@ -1,1 +1,0 @@
-ALTER TABLE tracks DROP COLUMN IF EXISTS cover_object;

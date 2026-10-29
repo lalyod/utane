@@ -1,17 +1,15 @@
 package app
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
+	"testing/fstest"
 )
 
 func TestDiscoverMigrations(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"010_tenth.up.sql", "README.md", "002_second.up.sql"} {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	dir := fstest.MapFS{
+		"010_tenth.up.sql":  {},
+		"README.md":         {},
+		"002_second.up.sql": {},
 	}
 
 	migrations, err := discoverMigrations(dir)
